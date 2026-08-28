@@ -300,20 +300,160 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
     return result_bytes, created
 
 
-uploaded = st.file_uploader("Upload monthly line listing", type=["xlsx"])
-current = date.today()
-c1, c2 = st.columns(2)
-with c1:
-    selected_month = st.selectbox("Month", list(range(1, 13)), index=current.month - 1, format_func=lambda m: calendar.month_name[m])
-with c2:
-    selected_year = st.number_input("Year", min_value=2000, max_value=2100, value=current.year, step=1)
 
-if uploaded and st.button("Generate product-wise workbook", type="primary"):
-    try:
-        result, summary = build_split_workbook(uploaded.getvalue(), int(selected_year), int(selected_month))
-        st.success(f"Created {len(summary)} Celix product sheets.")
-        st.dataframe({"Celix Product": [x[0] for x in summary], "Cases": [x[1] for x in summary]}, hide_index=True, use_container_width=True)
-        filename = f"Celix_Product_Line_Listing_{int(selected_year)}_{int(selected_month):02d}.xlsx"
-        st.download_button("Download segregated workbook", result, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    except Exception as exc:
-        st.error(f"Could not generate the workbook: {exc}")
+def extract_pt_term(value):
+    """Remove the trailing MedDRA numeric code from a PT display value."""
+    return re.sub(r"\s*\(\s*\d+\s*\)\s*$", "", str(value or "")).strip()
+
+
+def report_expectedness(value):
+    text = norm(value)
+    if text.endswith("unexpected") or " unexpected" in f" {text}":
+        return "Unexpected"
+    if text.endswith("expected") or " expected" in f" {text}":
+        return "Expected"
+    return ""
+
+
+def listedness_index_from_repository():
+    from listedness_service import dataframe_to_index
+    data_dir = Path(__file__).resolve().parents[1] / "data"
+    candidates = [data_dir / "Listedness_CX.xlsx", data_dir / "Listedness_CX.csv"]
+    for path in candidates:
+        if path.exists():
+            if path.suffix.lower() == ".csv":
+                import pandas as pd
+                df = pd.read_csv(path)
+            else:
+                import pandas as pd
+                df = pd.read_excel(path, engine="openpyxl")
+            return dataframe_to_index(df), path.name
+    raise FileNotFoundError("Listedness_CX.xlsx was not found in the data folder.")
+
+
+def read_event_summary(uploaded_bytes):
+    import pandas as pd
+    workbook = load_workbook(io.BytesIO(uploaded_bytes), data_only=True)
+    ws = workbook[workbook.sheetnames[0]]
+    header_row = find_header_row(ws)
+    headers = [str(ws.cell(header_row, col).value or "").strip() for col in range(1, ws.max_column + 1)]
+    required = ["Safety Report ID", "Product Name", "PT", "Other Listedness"]
+    positions = {}
+    for name in required:
+        target = norm(name)
+        for col, header in enumerate(headers, start=1):
+            if norm(header) == target:
+                positions[name] = col
+                break
+        if name not in positions:
+            raise ValueError(f"Required column not found: {name}")
+
+    master, master_name = listedness_index_from_repository()
+    checked, mismatches, missing = [], [], []
+    for row in range(header_row + 1, ws.max_row + 1):
+        safety_id = str(ws.cell(row, positions["Safety Report ID"]).value or "").strip()
+        if not safety_id:
+            continue
+        product_text = ws.cell(row, positions["Product Name"]).value
+        pt_raw = ws.cell(row, positions["PT"]).value
+        pt = extract_pt_term(pt_raw)
+        reported = report_expectedness(ws.cell(row, positions["Other Listedness"]).value)
+        celix_products = matched_celix_products(product_text)
+        for product in celix_products:
+            key = (norm(product), norm(pt))
+            stored = master.get(key)
+            master_value = str((stored or {}).get("Expectedness", "")).strip()
+            comment = str((stored or {}).get("Comment", "")).strip()
+            if stored is None:
+                status = "No exact match in master"
+            elif not reported:
+                status = "Source expectedness unavailable"
+            elif norm(master_value) != norm(reported):
+                status = "Mismatch"
+            else:
+                status = "Match"
+            record = {
+                "Safety Report ID": safety_id,
+                "Celix Product": product.upper(),
+                "PT": pt,
+                "Report Expectedness": reported or "Not identified",
+                "Master Expectedness": master_value or "Not found",
+                "Status": status,
+                "Master Comment": comment,
+            }
+            checked.append(record)
+            if status == "Mismatch":
+                mismatches.append(record)
+            elif status == "No exact match in master":
+                missing.append(record)
+    return checked, mismatches, missing, master_name
+
+
+def mismatch_workbook(records):
+    import pandas as pd
+    output = io.BytesIO()
+    columns = ["Safety Report ID", "Celix Product", "PT", "Report Expectedness", "Master Expectedness", "Status", "Master Comment"]
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        pd.DataFrame(records, columns=columns).to_excel(writer, index=False, sheet_name="Mismatch Pairs")
+        ws = writer.book["Mismatch Pairs"]
+        for cell in ws[1]:
+            cell.font = copy(cell.font)
+            cell.font = cell.font.copy(bold=True)
+        widths = [24, 24, 36, 24, 24, 26, 42]
+        for index, width in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(index)].width = width
+    return output.getvalue()
+
+
+tab_split, tab_check = st.tabs(["Product-wise Line Listing", "Event Listedness Check"])
+
+with tab_split:
+    uploaded = st.file_uploader("Upload monthly line listing", type=["xlsx"], key="line_listing_upload")
+    current = date.today()
+    c1, c2 = st.columns(2)
+    with c1:
+        selected_month = st.selectbox("Month", list(range(1, 13)), index=current.month - 1, format_func=lambda m: calendar.month_name[m])
+    with c2:
+        selected_year = st.number_input("Year", min_value=2000, max_value=2100, value=current.year, step=1)
+
+    if uploaded and st.button("Generate product-wise workbook", type="primary"):
+        try:
+            result, summary = build_split_workbook(uploaded.getvalue(), int(selected_year), int(selected_month))
+            st.success(f"Created {len(summary)} Celix product sheets.")
+            st.dataframe({"Celix Product": [x[0] for x in summary], "Cases": [x[1] for x in summary]}, hide_index=True, use_container_width=True)
+            filename = f"Celix_Product_Line_Listing_{int(selected_year)}_{int(selected_month):02d}.xlsx"
+            st.download_button("Download segregated workbook", result, file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        except Exception as exc:
+            st.error(f"Could not generate the workbook: {exc}")
+
+with tab_check:
+    st.subheader("Event Summary Listedness Check")
+    st.caption("Checks only Celix products and compares the report expectedness against Active Ingredient + PT in Listedness_CX.xlsx.")
+    event_file = st.file_uploader("Upload Event Summary Report", type=["xlsx"], key="event_summary_upload")
+    if event_file and st.button("Check listedness mismatches", type="primary"):
+        try:
+            checked, mismatches, missing, master_name = read_event_summary(event_file.getvalue())
+            st.caption(f"Listedness master used: {master_name}")
+            a, b, c = st.columns(3)
+            a.metric("Celix pairs checked", len(checked))
+            b.metric("Mismatch pairs", len(mismatches))
+            c.metric("Missing master pairs", len(missing))
+
+            if mismatches:
+                st.error(f"{len(mismatches)} listedness mismatch pair(s) found.")
+                st.dataframe(mismatches, hide_index=True, use_container_width=True)
+                st.download_button(
+                    "Download mismatch report",
+                    mismatch_workbook(mismatches),
+                    file_name="Celix_Listedness_Mismatch_Pairs.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            else:
+                st.success("No listedness mismatches were found for Celix product pairs.")
+
+            if missing:
+                st.warning(f"{len(missing)} Active Ingredient + PT pair(s) were not found in the listedness master.")
+                with st.expander("Show pairs missing from listedness master"):
+                    st.dataframe(missing, hide_index=True, use_container_width=True)
+        except Exception as exc:
+            st.error(f"Could not check the Event Summary Report: {exc}")
