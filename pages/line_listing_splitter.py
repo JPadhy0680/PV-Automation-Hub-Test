@@ -440,6 +440,7 @@ with tab_check:
             "event_summary_upload",
             "listedness_batch_editor",
             "listedness_batch_password",
+            "excluded_listedness_pairs",
         ]:
             st.session_state.pop(key, None)
         st.session_state["event_upload_version"] = st.session_state.get("event_upload_version", 0) + 1
@@ -493,63 +494,88 @@ with tab_check:
         if missing:
             st.warning(f"{len(missing)} Active Ingredient + PT occurrence(s) were not found in the listedness master.")
 
-        # Combine unique mismatch and missing pairs into one batch editor.
+        # Combine unique mismatch and missing pairs and retain all supporting Safety Report IDs.
+        excluded_pairs = set(st.session_state.get("excluded_listedness_pairs", []))
         batch_pairs = {}
-        for item in mismatches:
-            key = (norm(item["Celix Product"]), norm(item["PT"]))
-            batch_pairs[key] = {
-                "Update": True,
-                "Pair Type": "Mismatch",
-                "Active Ingredients": item["Celix Product"],
-                "PT": item["PT"],
-                "Report Expectedness": item["Report Expectedness"],
-                "Current Master": item["Master Expectedness"],
-                "New Expectedness": "",
-                "Comment": item.get("Master Comment", ""),
-            }
 
-        for item in missing:
-            key = (norm(item["Celix Product"]), norm(item["PT"]))
-            if key not in batch_pairs:
-                batch_pairs[key] = {
+        def add_batch_occurrence(item, pair_type):
+            pair_key = (norm(item["Celix Product"]), norm(item["PT"]))
+            stable_key = f"{pair_key[0]}|||{pair_key[1]}"
+            if stable_key in excluded_pairs:
+                return
+            safety_id = str(item.get("Safety Report ID", "") or "").strip()
+            if pair_key not in batch_pairs:
+                batch_pairs[pair_key] = {
+                    "Delete": False,
                     "Update": True,
-                    "Pair Type": "Missing",
+                    "Pair Type": pair_type,
+                    "Safety Report ID": safety_id,
                     "Active Ingredients": item["Celix Product"],
                     "PT": item["PT"],
                     "Report Expectedness": item["Report Expectedness"],
-                    "Current Master": "Not found",
+                    "Current Master": item["Master Expectedness"] if pair_type == "Mismatch" else "Not found",
                     "New Expectedness": "",
-                    "Comment": "",
+                    "Comment": "" if str(item.get("Master Comment", "")).lower() == "nan" else str(item.get("Master Comment", "") or ""),
+                    "_pair_key": stable_key,
                 }
+            elif safety_id:
+                existing_ids = [value.strip() for value in batch_pairs[pair_key]["Safety Report ID"].split(";") if value.strip()]
+                if safety_id not in existing_ids:
+                    existing_ids.append(safety_id)
+                    batch_pairs[pair_key]["Safety Report ID"] = "; ".join(existing_ids)
+
+        for item in mismatches:
+            add_batch_occurrence(item, "Mismatch")
+        for item in missing:
+            add_batch_occurrence(item, "Missing")
 
         if batch_pairs:
             st.markdown("#### Update missing and mismatch pairs")
             st.caption(
-                "Review the proposed New Expectedness, uncheck any pair that should not be changed, "
-                "then enter the administrator password once for the full batch."
+                "Safety Report ID shows the case source for verification. Select Delete to remove an incorrectly captured pair "
+                "from this displayed batch, or manually select New Expectedness before updating GitHub."
             )
-            batch_df = pd.DataFrame(batch_pairs.values())
+            display_columns = [
+                "Delete", "Update", "Pair Type", "Safety Report ID", "Active Ingredients", "PT",
+                "Report Expectedness", "Current Master", "New Expectedness", "Comment", "_pair_key"
+            ]
+            batch_df = pd.DataFrame(batch_pairs.values(), columns=display_columns)
             edited_batch = st.data_editor(
                 batch_df,
                 hide_index=True,
                 use_container_width=True,
                 key="listedness_batch_editor",
                 column_config={
+                    "Delete": st.column_config.CheckboxColumn("Delete", default=False),
                     "Update": st.column_config.CheckboxColumn("Update", default=True),
                     "Pair Type": st.column_config.TextColumn("Pair Type", disabled=True),
+                    "Safety Report ID": st.column_config.TextColumn("Safety Report ID", disabled=True, width="large"),
                     "Active Ingredients": st.column_config.TextColumn("Active Ingredients", disabled=True),
-                    "PT": st.column_config.TextColumn("PT", disabled=True),
+                    "PT": st.column_config.TextColumn("PT", disabled=True, width="large"),
                     "Report Expectedness": st.column_config.TextColumn("Report Expectedness", disabled=True),
                     "Current Master": st.column_config.TextColumn("Current Master", disabled=True),
                     "New Expectedness": st.column_config.SelectboxColumn(
-                        "New Expectedness",
-                        options=["Expected", "Unexpected"],
-                        required=False,
+                        "New Expectedness", options=["Expected", "Unexpected"], required=False
                     ),
-                    "Comment": st.column_config.TextColumn("Comment"),
+                    "Comment": st.column_config.TextColumn("Comment", width="large"),
+                    "_pair_key": None,
                 },
-                disabled=["Pair Type", "Active Ingredients", "PT", "Report Expectedness", "Current Master"],
+                disabled=[
+                    "Pair Type", "Safety Report ID", "Active Ingredients", "PT",
+                    "Report Expectedness", "Current Master", "_pair_key"
+                ],
             )
+
+            if st.button("Delete selected rows", key="delete_selected_listedness_rows"):
+                selected_for_delete = edited_batch[edited_batch["Delete"] == True]
+                if selected_for_delete.empty:
+                    st.info("Select at least one Delete checkbox first.")
+                else:
+                    updated_exclusions = set(st.session_state.get("excluded_listedness_pairs", []))
+                    updated_exclusions.update(selected_for_delete["_pair_key"].astype(str).tolist())
+                    st.session_state["excluded_listedness_pairs"] = sorted(updated_exclusions)
+                    st.session_state.pop("listedness_batch_editor", None)
+                    st.rerun()
 
             batch_password = st.text_input(
                 "Administrator password for all selected pairs",
@@ -561,7 +587,7 @@ with tab_check:
                 selected_rows = []
                 skipped = 0
                 for row in edited_batch.to_dict("records"):
-                    if not row.get("Update"):
+                    if row.get("Delete") or not row.get("Update"):
                         continue
                     expectedness = str(row.get("New Expectedness", "") or "").strip()
                     if expectedness not in {"Expected", "Unexpected"}:
@@ -592,5 +618,6 @@ with tab_check:
                         st.session_state.pop("event_listedness_results", None)
                         st.session_state.pop("listedness_batch_editor", None)
                         st.session_state.pop("listedness_batch_password", None)
+                        st.session_state.pop("excluded_listedness_pairs", None)
                     except Exception as exc:
                         st.error(f"GitHub batch update failed: {exc}")
