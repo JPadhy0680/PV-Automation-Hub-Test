@@ -128,42 +128,75 @@ def product_display(product):
 def set_top_details(ws, product, start_date, end_date):
     display = product_display(product)
     replacements = {
-        4: f"Project Name: CELIXP-GB-({display})({display})",
-        5: f"Active Ingredient: {display}",
-        6: f"Proprietory Name: {display}",
-        7: f"Drug Name: {display}",
-        8: f"Period: ADR Receipt Date: :{start_date.strftime('%d-%b-%y')} To {end_date.strftime('%d-%b-%y')}",
+        3: f"Project Name: CELIXP-GB-({display})({display})",
+        4: f"Active Ingredient: {display}",
+        5: f"Proprietory Name: {display}",
+        6: f"Drug Name: {display}",
+        7: f"Period: ADR Receipt Date: :{start_date.strftime('%d-%b-%y')} To {end_date.strftime('%d-%b-%y')}",
     }
     for row, value in replacements.items():
         ws.cell(row, 1).value = value
 
 
-def add_serial_number_column(ws, header_row):
-    old_merges = [str(rng) for rng in ws.merged_cells.ranges]
-    for rng in old_merges:
-        ws.unmerge_cells(rng)
-    ws.insert_cols(1)
-    # Restore top merged rows shifted by one column.
-    for rng in old_merges:
-        from openpyxl.utils.cell import range_boundaries
-        min_col, min_row, max_col, max_row = range_boundaries(rng)
-        ws.merge_cells(start_row=min_row, start_column=min_col + 1, end_row=max_row, end_column=max_col + 1)
-    # Move top detail text back to A so it matches the visible report style.
-    for row in range(1, header_row):
-        if ws.cell(row, 2).value is not None:
-            ws.cell(row, 1).value = ws.cell(row, 2).value
-            clone_style(ws.cell(row, 2), ws.cell(row, 1))
-            ws.cell(row, 2).value = None
-    # Expand top merges to begin at A.
+
+def remove_blank_top_rows(ws):
+    """Remove fully blank leading rows while preserving values, styles and merged ranges."""
+    blank_count = 0
+    for row in range(1, ws.max_row + 1):
+        if all(ws.cell(row, col).value in (None, "") for col in range(1, ws.max_column + 1)):
+            blank_count += 1
+        else:
+            break
+    if blank_count == 0:
+        return
+    merges = [
+        (rng.min_row, rng.min_col, rng.max_row, rng.max_col)
+        for rng in ws.merged_cells.ranges
+        if rng.max_row > blank_count
+    ]
     for rng in list(ws.merged_cells.ranges):
-        if rng.min_row < header_row and rng.min_col == 2:
-            min_row, max_row, max_col = rng.min_row, rng.max_row, rng.max_col
-            ws.unmerge_cells(str(rng))
-            ws.merge_cells(start_row=min_row, start_column=1, end_row=max_row, end_column=max_col)
+        ws.unmerge_cells(str(rng))
+    max_row, max_col = ws.max_row, ws.max_column
+    for source_row in range(blank_count + 1, max_row + 1):
+        target_row = source_row - blank_count
+        for col in range(1, max_col + 1):
+            source = ws.cell(source_row, col)
+            target = ws.cell(target_row, col)
+            target.value = source.value
+            clone_style(source, target)
+        ws.row_dimensions[target_row].height = ws.row_dimensions[source_row].height
+    ws.delete_rows(max_row - blank_count + 1, blank_count)
+    for min_row, min_col, max_row_merge, max_col_merge in merges:
+        ws.merge_cells(
+            start_row=max(1, min_row - blank_count),
+            start_column=min_col,
+            end_row=max_row_merge - blank_count,
+            end_column=max_col_merge,
+        )
+
+def add_serial_number_column(ws, header_row):
+    """Add Sl No only to the tabular area; leave the top report rows unchanged."""
+    original_max_col = ws.max_column
+    original_max_row = ws.max_row
+
+    # Shift header and data cells one column to the right without inserting a full worksheet column.
+    for row in range(original_max_row, header_row - 1, -1):
+        for col in range(original_max_col, 0, -1):
+            source = ws.cell(row, col)
+            target = ws.cell(row, col + 1)
+            target.value = source.value
+            clone_style(source, target)
+            source.value = None
+
+    # Shift visible column widths for the table columns.
+    for col in range(original_max_col, 0, -1):
+        source_letter = get_column_letter(col)
+        target_letter = get_column_letter(col + 1)
+        ws.column_dimensions[target_letter].width = ws.column_dimensions[source_letter].width
+
     ws.cell(header_row, 1).value = "Sl No"
     clone_style(ws.cell(header_row, 2), ws.cell(header_row, 1))
     ws.column_dimensions["A"].width = 8
-
 
 
 def normalize_xlsx_font_order(xlsx_bytes):
@@ -193,6 +226,11 @@ def normalize_xlsx_font_order(xlsx_bytes):
 def build_split_workbook(uploaded_bytes, selected_year, selected_month):
     workbook = load_workbook(io.BytesIO(uploaded_bytes))
     source = workbook[workbook.sheetnames[0]]
+    # The source report may contain a remote Print Date cell in the otherwise blank first row.
+    # Remove that auxiliary row so the report title starts immediately at row 1.
+    for col in range(1, source.max_column + 1):
+        source.cell(1, col).value = None
+    remove_blank_top_rows(source)
     header_row = find_header_row(source)
     product_col = find_column(source, header_row, "Product Name")
     date_col = find_column(source, header_row, "ADR Receipt Date/Time")
@@ -248,8 +286,8 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
             ws.cell(row, 1).value = index
             clone_style(ws.cell(row, 2), ws.cell(row, 1))
             ws.cell(row, 1).alignment = copy(ws.cell(row, 2).alignment)
-        ws.freeze_panes = f"B{header_row + 1}"
-        ws.auto_filter.ref = f"A{header_row}:{get_column_letter(ws.max_column)}{ws.max_row}"
+        ws.freeze_panes = None
+        ws.auto_filter.ref = None
         ws.sheet_view.showGridLines = source.sheet_view.showGridLines
         created.append((product_display(product), len(keep_rows)))
 
