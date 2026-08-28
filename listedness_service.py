@@ -153,3 +153,37 @@ def github_upsert_rows(rows):
     put.raise_for_status()
     sha = put.json().get("commit", {}).get("sha", "")
     return {"added": added, "updated": updated, "sha": sha}
+
+
+def has_exact_match(index, ingredient, pt):
+    """Return True only when the exact normalized Active Ingredient + PT pair exists."""
+    return (norm(ingredient), norm(pt)) in index
+
+
+def render_missing_listedness_update(key_prefix, ingredient, pt):
+    """Show one inline update form for a missing listedness pair."""
+    safe_key = f"{key_prefix}_{abs(hash((norm(ingredient), norm(pt))))}"
+    st.warning(f"No exact listedness match found for {ingredient} + {pt}.")
+    expectedness = st.selectbox(
+        "Expectedness",
+        ["Expected", "Unexpected"],
+        key=f"{safe_key}_expectedness",
+    )
+    comment = st.text_input("Comment", key=f"{safe_key}_comment")
+    password = st.text_input(
+        "Administrator password",
+        type="password",
+        key=f"{safe_key}_password",
+    )
+    if st.button("Update this listedness pair", key=f"{safe_key}_save"):
+        if not password_ok(password):
+            st.error("Invalid administrator password.")
+            return False
+        try:
+            sha = github_upsert_row(ingredient, pt, expectedness, comment)
+            st.success(f"Listedness master updated. Commit: {sha[:10]}")
+            st.cache_data.clear()
+            return True
+        except Exception as exc:
+            st.error(f"GitHub update failed: {exc}")
+    return False
