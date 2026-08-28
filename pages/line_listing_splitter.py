@@ -12,7 +12,6 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 st.title("Monthly Line Listing Application")
-st.caption("Upload one monthly line listing and download one workbook with a separate sheet for each Celix product.")
 
 CELIX_PRODUCTS = [
     "abiraterone", "apixaban", "apremilast", "bexarotene", "brivaracetam", "clobazam",
