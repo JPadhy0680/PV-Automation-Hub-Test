@@ -427,33 +427,126 @@ with tab_split:
             st.error(f"Could not generate the workbook: {exc}")
 
 with tab_check:
+    import pandas as pd
+    from listedness_service import github_upsert_rows, password_ok
+
     st.subheader("Event Summary Listedness Check")
     st.caption("Checks only Celix products and compares the report expectedness against Active Ingredient + PT in Listedness_CX.xlsx.")
     event_file = st.file_uploader("Upload Event Summary Report", type=["xlsx"], key="event_summary_upload")
+
     if event_file and st.button("Check listedness mismatches", type="primary"):
         try:
             checked, mismatches, missing, master_name = read_event_summary(event_file.getvalue())
-            st.caption(f"Listedness master used: {master_name}")
-            a, b, c = st.columns(3)
-            a.metric("Celix pairs checked", len(checked))
-            b.metric("Mismatch pairs", len(mismatches))
-            c.metric("Missing master pairs", len(missing))
-
-            if mismatches:
-                st.error(f"{len(mismatches)} listedness mismatch pair(s) found.")
-                st.dataframe(mismatches, hide_index=True, use_container_width=True)
-                st.download_button(
-                    "Download mismatch report",
-                    mismatch_workbook(mismatches),
-                    file_name="Celix_Listedness_Mismatch_Pairs.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            else:
-                st.success("No listedness mismatches were found for Celix product pairs.")
-
-            if missing:
-                st.warning(f"{len(missing)} Active Ingredient + PT pair(s) were not found in the listedness master.")
-                with st.expander("Show pairs missing from listedness master"):
-                    st.dataframe(missing, hide_index=True, use_container_width=True)
+            st.session_state["event_listedness_results"] = {
+                "checked": checked,
+                "mismatches": mismatches,
+                "missing": missing,
+                "master_name": master_name,
+            }
         except Exception as exc:
             st.error(f"Could not check the Event Summary Report: {exc}")
+            st.session_state.pop("event_listedness_results", None)
+
+    results = st.session_state.get("event_listedness_results")
+    if results:
+        checked = results["checked"]
+        mismatches = results["mismatches"]
+        missing = results["missing"]
+        master_name = results["master_name"]
+
+        st.caption(f"Listedness master used: {master_name}")
+        a, b, c = st.columns(3)
+        a.metric("Celix pairs checked", len(checked))
+        b.metric("Mismatch pairs", len(mismatches))
+        c.metric("Missing master pairs", len(missing))
+
+        if mismatches:
+            st.error(f"{len(mismatches)} listedness mismatch pair(s) found.")
+            st.dataframe(mismatches, hide_index=True, use_container_width=True)
+            st.download_button(
+                "Download mismatch report",
+                mismatch_workbook(mismatches),
+                file_name="Celix_Listedness_Mismatch_Pairs.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        else:
+            st.success("No listedness mismatches were found for Celix product pairs.")
+
+        if missing:
+            st.warning(f"{len(missing)} Active Ingredient + PT pair(s) were not found in the listedness master.")
+            st.markdown("#### Add missing pairs to Listedness master")
+            st.caption("Complete Expectedness for the rows you want to add. Enter the administrator password once, then submit all completed rows together.")
+
+            # Deduplicate repeated case-level occurrences into unique product + PT pairs.
+            unique_missing = {}
+            for item in missing:
+                key = (norm(item["Celix Product"]), norm(item["PT"]))
+                unique_missing[key] = {
+                    "Add": True,
+                    "Active Ingredients": item["Celix Product"],
+                    "PT": item["PT"],
+                    "Expectedness": "",
+                    "Comment": "",
+                }
+            missing_df = pd.DataFrame(unique_missing.values())
+
+            edited_missing = st.data_editor(
+                missing_df,
+                hide_index=True,
+                use_container_width=True,
+                key="event_missing_listedness_editor",
+                column_config={
+                    "Add": st.column_config.CheckboxColumn("Add", default=True),
+                    "Active Ingredients": st.column_config.TextColumn("Active Ingredients", disabled=True),
+                    "PT": st.column_config.TextColumn("PT", disabled=True),
+                    "Expectedness": st.column_config.SelectboxColumn(
+                        "Expectedness",
+                        options=["Expected", "Unexpected"],
+                        required=False,
+                    ),
+                    "Comment": st.column_config.TextColumn("Comment"),
+                },
+                disabled=["Active Ingredients", "PT"],
+            )
+
+            batch_password = st.text_input(
+                "Administrator password for all selected pairs",
+                type="password",
+                key="event_batch_listedness_password",
+            )
+
+            if st.button("Update all selected listedness pairs", key="event_batch_listedness_update"):
+                selected_rows = []
+                skipped = 0
+                for row in edited_missing.to_dict("records"):
+                    if not row.get("Add"):
+                        continue
+                    expectedness = str(row.get("Expectedness", "") or "").strip()
+                    if expectedness not in {"Expected", "Unexpected"}:
+                        skipped += 1
+                        continue
+                    selected_rows.append({
+                        "Active Ingredients": str(row.get("Active Ingredients", "")).strip(),
+                        "PT": str(row.get("PT", "")).strip(),
+                        "Expectedness": expectedness,
+                        "Comment": str(row.get("Comment", "") or "").strip(),
+                    })
+
+                if not password_ok(batch_password):
+                    st.error("Invalid administrator password.")
+                elif not selected_rows:
+                    st.error("Select at least one row and choose Expectedness before updating.")
+                else:
+                    try:
+                        outcome = github_upsert_rows(selected_rows)
+                        st.success(
+                            f"Listedness master updated in one commit. "
+                            f"Added: {outcome['added']}; Updated: {outcome['updated']}; "
+                            f"Commit: {outcome['sha'][:10]}"
+                        )
+                        if skipped:
+                            st.info(f"Skipped {skipped} selected row(s) because Expectedness was not chosen.")
+                        st.cache_data.clear()
+                        st.session_state.pop("event_listedness_results", None)
+                    except Exception as exc:
+                        st.error(f"GitHub batch update failed: {exc}")
