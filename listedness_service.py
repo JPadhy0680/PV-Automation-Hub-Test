@@ -31,15 +31,8 @@ def dataframe_to_index(df: pd.DataFrame) -> Dict[Tuple[str,str], Dict[str,str]]:
     return out
 
 def assess(index, ingredient, pt):
-    """Return stored expectedness/comment. Missing pairs are explicit, not Unexpected."""
-    row = index.get((norm(ingredient), norm(pt)))
-    if row is None:
-        return "No exact match found", ""
-    return row.get("Expectedness", ""), row.get("Comment", "")
-
-
-def has_exact_match(index, ingredient, pt):
-    return (norm(ingredient), norm(pt)) in index
+    row=index.get((norm(ingredient),norm(pt)))
+    return (row or {}).get("Expectedness","Unexpected"), (row or {}).get("Comment","")
 
 def _secret(name, default=""):
     try: return str(st.secrets.get(name,default))
@@ -91,37 +84,72 @@ def render_listedness_updater(key_prefix, ingredient_options, pt_options):
                 except Exception as exc: st.error(f"GitHub update failed: {exc}")
 
 
-def render_missing_listedness_update(key_prefix, ingredient, pt):
-    """Render update controls immediately below one unmatched listedness pair."""
-    safe_key = f"{key_prefix}_{abs(hash((norm(ingredient), norm(pt))))}"
-    st.warning(f"No exact listedness match found for {ingredient} + {pt}.")
-    c1, c2 = st.columns(2)
-    with c1:
-        expectedness = st.selectbox(
-            "Expectedness",
-            ["Expected", "Unexpected"],
-            key=f"{safe_key}_expectedness",
+def github_upsert_rows(rows):
+    """Add or update multiple listedness pairs in one GitHub commit."""
+    owner = _secret("GITHUB_OWNER")
+    repo = _secret("GITHUB_REPO")
+    branch = _secret("GITHUB_BRANCH", "main")
+    path = _secret("GITHUB_LISTEDNESS_PATH", "data/Listedness_CX.xlsx")
+    token = _secret("GITHUB_TOKEN")
+    if not all([owner, repo, path, token]):
+        raise RuntimeError("GitHub secrets are incomplete.")
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    got = requests.get(url, headers=headers, params={"ref": branch}, timeout=30)
+    got.raise_for_status()
+    meta = got.json()
+    raw = base64.b64decode(meta["content"])
+    df = pd.read_excel(io.BytesIO(raw), engine="openpyxl")
+
+    for column in LISTEDNESS_COLUMNS:
+        if column not in df.columns:
+            df[column] = ""
+
+    added = 0
+    updated = 0
+    for item in rows:
+        ingredient = str(item.get("Active Ingredients", "")).strip()
+        pt = str(item.get("PT", "")).strip()
+        expectedness = str(item.get("Expectedness", "")).strip()
+        comment = str(item.get("Comment", "")).strip()
+        if not ingredient or not pt or expectedness not in {"Expected", "Unexpected"}:
+            continue
+
+        mask = (
+            (df["Active Ingredients"].map(norm) == norm(ingredient))
+            & (df["PT"].map(norm) == norm(pt))
         )
-        password = st.text_input(
-            "Administrator password",
-            type="password",
-            key=f"{safe_key}_password",
-        )
-    with c2:
-        comment = st.text_area(
-            "Comment",
-            key=f"{safe_key}_comment",
-            height=100,
-        )
-    if st.button("Update this listedness pair", key=f"{safe_key}_save"):
-        if not password_ok(password):
-            st.error("Invalid administrator password.")
-            return False
-        try:
-            sha = github_upsert_row(ingredient, pt, expectedness, comment)
-            st.success(f"Listedness master updated. Commit: {sha[:10]}")
-            st.cache_data.clear()
-            return True
-        except Exception as exc:
-            st.error(f"GitHub update failed: {exc}")
-    return False
+        row = {
+            "Active Ingredients": ingredient.upper(),
+            "PT": pt,
+            "Expectedness": expectedness,
+            "Comment": comment,
+        }
+        if mask.any():
+            for column, value in row.items():
+                df.loc[mask, column] = value
+            updated += 1
+        else:
+            df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+            added += 1
+
+    if added == 0 and updated == 0:
+        raise ValueError("No completed listedness rows were provided.")
+
+    buffer = io.BytesIO()
+    df.to_excel(buffer, index=False, engine="openpyxl")
+    payload = {
+        "message": f"Batch update listedness: {added} added, {updated} updated",
+        "content": base64.b64encode(buffer.getvalue()).decode(),
+        "sha": meta["sha"],
+        "branch": branch,
+    }
+    put = requests.put(url, headers=headers, json=payload, timeout=30)
+    put.raise_for_status()
+    sha = put.json().get("commit", {}).get("sha", "")
+    return {"added": added, "updated": updated, "sha": sha}
