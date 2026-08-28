@@ -432,8 +432,25 @@ with tab_check:
     from listedness_service import github_upsert_rows, password_ok
 
     st.subheader("Event Summary Listedness Check")
-    st.caption("Checks only Celix products and compares the report expectedness against Active Ingredient + PT in Listedness_CX.xlsx.")
-    event_file = st.file_uploader("Upload Event Summary Report", type=["xlsx"], key="event_summary_upload")
+    st.caption("Checks only Celix products and compares report expectedness against Active Ingredient + PT in Listedness_CX.xlsx.")
+
+    if st.button("Clear uploaded file and displayed results", key="clear_event_listedness"):
+        for key in [
+            "event_listedness_results",
+            "event_summary_upload",
+            "listedness_batch_editor",
+            "listedness_batch_password",
+        ]:
+            st.session_state.pop(key, None)
+        st.session_state["event_upload_version"] = st.session_state.get("event_upload_version", 0) + 1
+        st.rerun()
+
+    event_upload_version = st.session_state.get("event_upload_version", 0)
+    event_file = st.file_uploader(
+        "Upload Event Summary Report",
+        type=["xlsx"],
+        key=f"event_summary_upload_{event_upload_version}",
+    )
 
     if event_file and st.button("Check listedness mismatches", type="primary"):
         try:
@@ -456,10 +473,10 @@ with tab_check:
         master_name = results["master_name"]
 
         st.caption(f"Listedness master used: {master_name}")
-        a, b, c = st.columns(3)
-        a.metric("Celix pairs checked", len(checked))
-        b.metric("Mismatch pairs", len(mismatches))
-        c.metric("Missing master pairs", len(missing))
+        metric1, metric2, metric3 = st.columns(3)
+        metric1.metric("Celix pairs checked", len(checked))
+        metric2.metric("Mismatch pairs", len(mismatches))
+        metric3.metric("Missing master pairs", len(missing))
 
         if mismatches:
             st.error(f"{len(mismatches)} listedness mismatch pair(s) found.")
@@ -474,55 +491,79 @@ with tab_check:
             st.success("No listedness mismatches were found for Celix product pairs.")
 
         if missing:
-            st.warning(f"{len(missing)} Active Ingredient + PT pair(s) were not found in the listedness master.")
-            st.markdown("#### Add missing pairs to Listedness master")
-            st.caption("Complete Expectedness for the rows you want to add. Enter the administrator password once, then submit all completed rows together.")
+            st.warning(f"{len(missing)} Active Ingredient + PT occurrence(s) were not found in the listedness master.")
 
-            # Deduplicate repeated case-level occurrences into unique product + PT pairs.
-            unique_missing = {}
-            for item in missing:
-                key = (norm(item["Celix Product"]), norm(item["PT"]))
-                unique_missing[key] = {
-                    "Add": True,
+        # Combine unique mismatch and missing pairs into one batch editor.
+        batch_pairs = {}
+        for item in mismatches:
+            key = (norm(item["Celix Product"]), norm(item["PT"]))
+            batch_pairs[key] = {
+                "Update": True,
+                "Pair Type": "Mismatch",
+                "Active Ingredients": item["Celix Product"],
+                "PT": item["PT"],
+                "Report Expectedness": item["Report Expectedness"],
+                "Current Master": item["Master Expectedness"],
+                "New Expectedness": item["Report Expectedness"] if item["Report Expectedness"] in {"Expected", "Unexpected"} else "",
+                "Comment": item.get("Master Comment", ""),
+            }
+
+        for item in missing:
+            key = (norm(item["Celix Product"]), norm(item["PT"]))
+            if key not in batch_pairs:
+                batch_pairs[key] = {
+                    "Update": True,
+                    "Pair Type": "Missing",
                     "Active Ingredients": item["Celix Product"],
                     "PT": item["PT"],
-                    "Expectedness": "",
+                    "Report Expectedness": item["Report Expectedness"],
+                    "Current Master": "Not found",
+                    "New Expectedness": item["Report Expectedness"] if item["Report Expectedness"] in {"Expected", "Unexpected"} else "",
                     "Comment": "",
                 }
-            missing_df = pd.DataFrame(unique_missing.values())
 
-            edited_missing = st.data_editor(
-                missing_df,
+        if batch_pairs:
+            st.markdown("#### Update missing and mismatch pairs")
+            st.caption(
+                "Review the proposed New Expectedness, uncheck any pair that should not be changed, "
+                "then enter the administrator password once for the full batch."
+            )
+            batch_df = pd.DataFrame(batch_pairs.values())
+            edited_batch = st.data_editor(
+                batch_df,
                 hide_index=True,
                 use_container_width=True,
-                key="event_missing_listedness_editor",
+                key="listedness_batch_editor",
                 column_config={
-                    "Add": st.column_config.CheckboxColumn("Add", default=True),
+                    "Update": st.column_config.CheckboxColumn("Update", default=True),
+                    "Pair Type": st.column_config.TextColumn("Pair Type", disabled=True),
                     "Active Ingredients": st.column_config.TextColumn("Active Ingredients", disabled=True),
                     "PT": st.column_config.TextColumn("PT", disabled=True),
-                    "Expectedness": st.column_config.SelectboxColumn(
-                        "Expectedness",
+                    "Report Expectedness": st.column_config.TextColumn("Report Expectedness", disabled=True),
+                    "Current Master": st.column_config.TextColumn("Current Master", disabled=True),
+                    "New Expectedness": st.column_config.SelectboxColumn(
+                        "New Expectedness",
                         options=["Expected", "Unexpected"],
                         required=False,
                     ),
                     "Comment": st.column_config.TextColumn("Comment"),
                 },
-                disabled=["Active Ingredients", "PT"],
+                disabled=["Pair Type", "Active Ingredients", "PT", "Report Expectedness", "Current Master"],
             )
 
             batch_password = st.text_input(
                 "Administrator password for all selected pairs",
                 type="password",
-                key="event_batch_listedness_password",
+                key="listedness_batch_password",
             )
 
-            if st.button("Update all selected listedness pairs", key="event_batch_listedness_update"):
+            if st.button("Update all selected listedness pairs", key="submit_listedness_batch"):
                 selected_rows = []
                 skipped = 0
-                for row in edited_missing.to_dict("records"):
-                    if not row.get("Add"):
+                for row in edited_batch.to_dict("records"):
+                    if not row.get("Update"):
                         continue
-                    expectedness = str(row.get("Expectedness", "") or "").strip()
+                    expectedness = str(row.get("New Expectedness", "") or "").strip()
                     if expectedness not in {"Expected", "Unexpected"}:
                         skipped += 1
                         continue
@@ -536,18 +577,20 @@ with tab_check:
                 if not password_ok(batch_password):
                     st.error("Invalid administrator password.")
                 elif not selected_rows:
-                    st.error("Select at least one row and choose Expectedness before updating.")
+                    st.error("Select at least one pair and choose New Expectedness.")
                 else:
                     try:
                         outcome = github_upsert_rows(selected_rows)
                         st.success(
-                            f"Listedness master updated in one commit. "
+                            f"Listedness master updated in one GitHub commit. "
                             f"Added: {outcome['added']}; Updated: {outcome['updated']}; "
                             f"Commit: {outcome['sha'][:10]}"
                         )
                         if skipped:
-                            st.info(f"Skipped {skipped} selected row(s) because Expectedness was not chosen.")
+                            st.info(f"Skipped {skipped} selected pair(s) because New Expectedness was blank.")
                         st.cache_data.clear()
                         st.session_state.pop("event_listedness_results", None)
+                        st.session_state.pop("listedness_batch_editor", None)
+                        st.session_state.pop("listedness_batch_password", None)
                     except Exception as exc:
                         st.error(f"GitHub batch update failed: {exc}")
