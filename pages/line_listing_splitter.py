@@ -504,7 +504,7 @@ with tab_check:
                 "PT": item["PT"],
                 "Report Expectedness": item["Report Expectedness"],
                 "Current Master": item["Master Expectedness"],
-                "New Expectedness": item["Report Expectedness"] if item["Report Expectedness"] in {"Expected", "Unexpected"} else "",
+                "New Expectedness": "",
                 "Comment": item.get("Master Comment", ""),
             }
 
@@ -518,7 +518,7 @@ with tab_check:
                     "PT": item["PT"],
                     "Report Expectedness": item["Report Expectedness"],
                     "Current Master": "Not found",
-                    "New Expectedness": item["Report Expectedness"] if item["Report Expectedness"] in {"Expected", "Unexpected"} else "",
+                    "New Expectedness": "",
                     "Comment": "",
                 }
 
