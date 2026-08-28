@@ -408,6 +408,7 @@ def mismatch_workbook(records):
 tab_split, tab_check = st.tabs(["Product-wise Line Listing", "Event Listedness Check"])
 
 with tab_split:
+    st.caption("Upload one monthly line listing and download one workbook with a separate sheet for each Celix product.")
     uploaded = st.file_uploader("Upload monthly line listing", type=["xlsx"], key="line_listing_upload")
     current = date.today()
     c1, c2 = st.columns(2)
