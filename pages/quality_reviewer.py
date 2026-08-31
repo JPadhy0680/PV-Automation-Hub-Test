@@ -2711,6 +2711,19 @@ else:
 # 11) Causality — SINGLE CONSOLIDATED TABLE
 section_header("Causality", "causality")
 
+# Dechallenge reminder: show once in the Causality section when any Source or
+# Processed product has Action Taken recorded as Drug withdrawn.
+def _has_drug_withdrawn(products: List[Dict[str, Any]]) -> bool:
+    for product in products or []:
+        action_taken = normalize_text(str(product.get("Action Taken", "") or ""))
+        if "drug withdrawn" in action_taken:
+            return True
+    return False
+
+if _has_drug_withdrawn(src.get("Products", []) or []) or _has_drug_withdrawn(prc.get("Products", []) or []):
+    st.warning("Kindly Check DC", icon="⚠️")
+
+
 def _caus_df(lst: List[Dict[str, Any]]) -> pd.DataFrame:
     if not lst:
         return pd.DataFrame(columns=["Drug", "Reaction", "Assessor", "Method", "Assessment"])
