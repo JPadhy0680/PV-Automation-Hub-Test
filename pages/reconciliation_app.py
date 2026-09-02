@@ -71,6 +71,27 @@ def split_external_ids(value):
     return {norm_id(part) for part in re.split(r"[;,\n|]+", text) if norm_id(part)}
 
 
+def reference_matches_external(reference_id, external_value):
+    """Match exact IDs and report-truncated IDs using a conservative shared prefix."""
+    reference = norm_id(reference_id)
+    if not reference:
+        return False
+    for external in split_external_ids(external_value):
+        if reference == external:
+            return True
+        # Reports frequently truncate long MHRA IDs or add a five-letter workflow suffix.
+        shorter, longer = sorted([reference, external], key=len)
+        if len(shorter) >= 20 and longer.startswith(shorter):
+            return True
+        reference_without_suffix = re.sub(r"-[A-Z]{5}$", "", reference)
+        if reference_without_suffix == external:
+            return True
+        shorter, longer = sorted([reference_without_suffix, external], key=len)
+        if len(shorter) >= 20 and longer.startswith(shorter):
+            return True
+    return False
+
+
 def detect_header_row(ws, required_alias_groups):
     for row in range(1, min(ws.max_row, 60) + 1):
         headers = {norm_header(ws.cell(row, col).value) for col in range(1, ws.max_column + 1)}
@@ -83,7 +104,7 @@ def read_report(file_bytes, report_type):
     wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
     ws = wb[wb.sheetnames[0]]
     if report_type == "tracker":
-        required = [["ACK No"], ["Receipt Date"], ["Referance ID", "Reference ID"], ["Safety Repoprt ID", "Safety Report ID"]]
+        required = [["Receipt Date"], ["Referance ID", "Reference ID"], ["Safety Repoprt ID", "Safety Report ID"]]
     else:
         required = [["Safety Report ID"], ["ADR Receipt Date/Time"], ["Case Seriousness"], ["External ID"]]
     header_row = detect_header_row(ws, required)
@@ -108,7 +129,7 @@ def find_col(df, aliases, required=True):
 
 def reconcile(tracker_df, safety_df):
     tc = {
-        "ack": find_col(tracker_df, ["ACK No"]),
+        "ack": find_col(tracker_df, ["ACK No"], False),
         "receipt": find_col(tracker_df, ["Receipt Date"]),
         "source": find_col(tracker_df, ["Source"], False),
         "reference": find_col(tracker_df, ["Referance ID", "Reference ID"]),
@@ -143,7 +164,7 @@ def reconcile(tracker_df, safety_df):
         # Fallback matching by Reference ID being one of the safety report External IDs.
         if not candidates and tracker_ref:
             for sidx, srow in safety_df.iterrows():
-                if tracker_ref in split_external_ids(srow.get(sc["external"])):
+                if reference_matches_external(tracker_ref, srow.get(sc["external"])):
                     candidates.append((sidx, srow))
             if candidates:
                 match_method = "Reference ID / External ID"
@@ -152,7 +173,7 @@ def reconcile(tracker_df, safety_df):
             results.append({
                 "Status": "Missing in Safety Report",
                 "Match Method": "",
-                "ACK No": clean_text(trow.get(tc["ack"])),
+                "ACK No": clean_text(trow.get(tc["ack"])) if tc["ack"] else "",
                 "Tracker Safety Report ID": clean_text(trow.get(tc["safety"])),
                 "Safety System ID": "",
                 "Reference ID": clean_text(trow.get(tc["reference"])),
@@ -160,7 +181,8 @@ def reconcile(tracker_df, safety_df):
                 "Reference ID Check": "Not checked",
                 "Tracker Receipt Date": display_date(trow.get(tc["receipt"])),
                 "ADR Receipt Date": "",
-                "Receipt Date Check": "Not checked",
+                "Receipt Date vs PV Check": "Not checked",
+                "IRD vs ADR Check": "Not checked",
                 "Tracker Seriousness": norm_seriousness(trow.get(tc["seriousness"])),
                 "Safety Seriousness": "",
                 "Seriousness Check": "Not checked",
@@ -177,9 +199,9 @@ def reconcile(tracker_df, safety_df):
         sidx, srow = candidates[0]
         used_safety_rows.add(sidx)
         safety_sid = clean_text(srow.get(sc["safety"]))
-        external_ids = split_external_ids(srow.get(sc["external"]))
-        reference_match = bool(tracker_ref and tracker_ref in external_ids)
-        receipt_match = parse_date(trow.get(tc["receipt"])) == parse_date(srow.get(sc["adr"]))
+        reference_match = reference_matches_external(tracker_ref, srow.get(sc["external"]))
+        receipt_match = parse_date(trow.get(tc["receipt"])) == parse_date(srow.get(sc["pv"])) if sc["pv"] else False
+        ird_match = parse_date(trow.get(tc["ird"])) == parse_date(srow.get(sc["adr"])) if tc["ird"] else True
         seriousness_match = norm_header(norm_seriousness(trow.get(tc["seriousness"]))) == norm_header(norm_seriousness(srow.get(sc["seriousness"])))
         sid_match = bool(tracker_sid and tracker_sid == norm_id(safety_sid))
 
@@ -189,7 +211,9 @@ def reconcile(tracker_df, safety_df):
         if not reference_match:
             issues.append("Reference ID not found in External ID")
         if not receipt_match:
-            issues.append("Receipt Date differs from ADR Receipt Date")
+            issues.append("Receipt Date differs from PV Received Date")
+        if not ird_match:
+            issues.append("IRD differs from ADR Receipt Date")
         if not seriousness_match:
             issues.append("Seriousness mismatch")
         status = "Match" if not issues else "Mismatch"
@@ -197,7 +221,7 @@ def reconcile(tracker_df, safety_df):
         results.append({
             "Status": status,
             "Match Method": match_method,
-            "ACK No": clean_text(trow.get(tc["ack"])),
+            "ACK No": clean_text(trow.get(tc["ack"])) if tc["ack"] else "",
             "Tracker Safety Report ID": clean_text(trow.get(tc["safety"])),
             "Safety System ID": safety_sid,
             "Reference ID": clean_text(trow.get(tc["reference"])),
@@ -205,13 +229,14 @@ def reconcile(tracker_df, safety_df):
             "Reference ID Check": "Match" if reference_match else "Mismatch",
             "Tracker Receipt Date": display_date(trow.get(tc["receipt"])),
             "ADR Receipt Date": display_date(srow.get(sc["adr"])),
-            "Receipt Date Check": "Match" if receipt_match else "Mismatch",
+            "PV Received Date/Time": clean_text(srow.get(sc["pv"])) if sc["pv"] else "",
+            "Receipt Date vs PV Check": "Match" if receipt_match else "Mismatch",
+            "IRD vs ADR Check": "Match" if ird_match else "Mismatch",
             "Tracker Seriousness": norm_seriousness(trow.get(tc["seriousness"])),
             "Safety Seriousness": norm_seriousness(srow.get(sc["seriousness"])),
             "Seriousness Check": "Match" if seriousness_match else "Mismatch",
             "Source": clean_text(trow.get(tc["source"])) if tc["source"] else "",
             "IRD": display_date(trow.get(tc["ird"])) if tc["ird"] else "",
-            "PV Received Date/Time": clean_text(srow.get(sc["pv"])) if sc["pv"] else "",
             "Suspect Product": clean_text(trow.get(tc["product"])) if tc["product"] else "",
             "Validity": clean_text(trow.get(tc["validity"])) if tc["validity"] else "",
             "Mismatch Details": "; ".join(issues),
@@ -232,7 +257,8 @@ def reconcile(tracker_df, safety_df):
             "Reference ID Check": "Not checked",
             "Tracker Receipt Date": "",
             "ADR Receipt Date": display_date(srow.get(sc["adr"])),
-            "Receipt Date Check": "Not checked",
+            "Receipt Date vs PV Check": "Not checked",
+                "IRD vs ADR Check": "Not checked",
             "Tracker Seriousness": "",
             "Safety Seriousness": norm_seriousness(srow.get(sc["seriousness"])),
             "Seriousness Check": "Not checked",
