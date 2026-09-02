@@ -9,6 +9,7 @@ pages = {
         st.Page("pages/triage_app.py", title="E2B R3 XML Triage", icon="📊", default=True),
         st.Page("pages/quality_reviewer.py", title="XML Quality Reviewer", icon="🔎"),
         st.Page("pages/line_listing_splitter.py", title="Line Listing Splitter", icon="📑"),
+        st.Page("pages/reconciliation_app.py", title="Case Reconciliation", icon="🔄"),
     ]
 }
 
