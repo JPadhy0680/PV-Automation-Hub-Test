@@ -161,8 +161,10 @@ def reconcile(tracker_df, safety_df):
         candidates = safety_by_id.get(tracker_sid, []) if tracker_sid else []
         match_method = "Safety Report ID" if candidates else ""
 
-        # Fallback matching by Reference ID being one of the safety report External IDs.
-        if not candidates and tracker_ref:
+        # Safety Report ID is authoritative when present and must match exactly,
+        # including the final version suffix such as -01 or -02.
+        # Reference ID fallback is allowed only when the tracker Safety Report ID is blank.
+        if not tracker_sid and tracker_ref:
             for sidx, srow in safety_df.iterrows():
                 if reference_matches_external(tracker_ref, srow.get(sc["external"])):
                     candidates.append((sidx, srow))
@@ -191,7 +193,11 @@ def reconcile(tracker_df, safety_df):
                 "PV Received Date/Time": "",
                 "Suspect Product": clean_text(trow.get(tc["product"])) if tc["product"] else "",
                 "Validity": clean_text(trow.get(tc["validity"])) if tc["validity"] else "",
-                "Mismatch Details": "Safety Report ID and Reference ID were not found in the safety-system report",
+                "Mismatch Details": (
+                    "Exact Safety Report ID was not found in the safety-system report"
+                    if tracker_sid else
+                    "Reference ID was not found in the safety-system report"
+                ),
             })
             continue
 
