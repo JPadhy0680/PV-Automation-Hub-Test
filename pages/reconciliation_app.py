@@ -9,8 +9,6 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
-st.title("Monthly Case Reconciliation")
-st.caption("Upload the tracker and safety-system reports to identify missing cases and field-level mismatches.")
 
 
 def norm_header(value):
@@ -311,52 +309,131 @@ def output_workbook(result_df):
     return output.getvalue()
 
 
-if st.button("Clear uploads and results", key="recon_clear"):
-    for key in ["recon_results", "tracker_upload", "safety_upload"]:
-        st.session_state.pop(key, None)
-    st.session_state["recon_version"] = st.session_state.get("recon_version", 0) + 1
-    st.rerun()
+st.title("Monthly Reconciliation and Summary")
+tab_reconciliation, tab_summary = st.tabs(["Case Reconciliation", "Data Summary Generator"])
 
-version = st.session_state.get("recon_version", 0)
-left, right = st.columns(2)
-with left:
-    tracker_file = st.file_uploader("Upload Tracker Report", type=["xlsx"], key=f"tracker_upload_{version}")
-with right:
-    safety_file = st.file_uploader("Upload Safety-System Report", type=["xlsx"], key=f"safety_upload_{version}")
+with tab_reconciliation:
+    st.header("Monthly Case Reconciliation")
+    st.caption("Upload the tracker and safety-system reports to identify missing cases and field-level mismatches.")
+    if st.button("Clear uploads and results", key="recon_clear"):
+        for key in ["recon_results", "tracker_upload", "safety_upload"]:
+            st.session_state.pop(key, None)
+        st.session_state["recon_version"] = st.session_state.get("recon_version", 0) + 1
+        st.rerun()
 
-if tracker_file and safety_file and st.button("Run reconciliation", type="primary"):
-    try:
-        tracker = read_report(tracker_file.getvalue(), "tracker")
-        safety = read_report(safety_file.getvalue(), "safety")
-        st.session_state["recon_results"] = reconcile(tracker, safety)
-    except Exception as exc:
-        st.error(f"Reconciliation failed: {exc}")
+    version = st.session_state.get("recon_version", 0)
+    left, right = st.columns(2)
+    with left:
+        tracker_file = st.file_uploader("Upload Tracker Report", type=["xlsx"], key=f"tracker_upload_{version}")
+    with right:
+        safety_file = st.file_uploader("Upload Safety-System Report", type=["xlsx"], key=f"safety_upload_{version}")
 
-result = st.session_state.get("recon_results")
-if isinstance(result, pd.DataFrame):
-    match_count = int((result["Status"] == "Match").sum())
-    mismatch_count = int((result["Status"] == "Mismatch").sum())
-    missing_safety = int((result["Status"] == "Missing in Safety Report").sum())
-    missing_tracker = int((result["Status"] == "Missing in Tracker").sum())
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Matched", match_count)
-    c2.metric("Mismatched", mismatch_count)
-    c3.metric("Missing in Safety", missing_safety)
-    c4.metric("Missing in Tracker", missing_tracker)
+    if tracker_file and safety_file and st.button("Run reconciliation", type="primary"):
+        try:
+            tracker = read_report(tracker_file.getvalue(), "tracker")
+            safety = read_report(safety_file.getvalue(), "safety")
+            st.session_state["recon_results"] = reconcile(tracker, safety)
+        except Exception as exc:
+            st.error(f"Reconciliation failed: {exc}")
 
-    exceptions = result[result["Status"] != "Match"]
-    if exceptions.empty:
-        st.success("Reconciliation completed. No mismatches or missing cases were found.")
-    else:
-        st.error(f"{len(exceptions)} reconciliation exception(s) found.")
-        st.dataframe(exceptions, hide_index=True, use_container_width=True)
+    result = st.session_state.get("recon_results")
+    if isinstance(result, pd.DataFrame):
+        match_count = int((result["Status"] == "Match").sum())
+        mismatch_count = int((result["Status"] == "Mismatch").sum())
+        missing_safety = int((result["Status"] == "Missing in Safety Report").sum())
+        missing_tracker = int((result["Status"] == "Missing in Tracker").sum())
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Matched", match_count)
+        c2.metric("Mismatched", mismatch_count)
+        c3.metric("Missing in Safety", missing_safety)
+        c4.metric("Missing in Tracker", missing_tracker)
 
-    with st.expander("Show matched records"):
-        st.dataframe(result[result["Status"] == "Match"], hide_index=True, use_container_width=True)
+        exceptions = result[result["Status"] != "Match"]
+        if exceptions.empty:
+            st.success("Reconciliation completed. No mismatches or missing cases were found.")
+        else:
+            st.error(f"{len(exceptions)} reconciliation exception(s) found.")
+            st.dataframe(exceptions, hide_index=True, use_container_width=True)
 
-    st.download_button(
-        "Download reconciliation workbook",
-        output_workbook(result),
-        file_name="Celix_Monthly_Reconciliation.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+        with st.expander("Show matched records"):
+            st.dataframe(result[result["Status"] == "Match"], hide_index=True, use_container_width=True)
+
+        st.download_button(
+            "Download reconciliation workbook",
+            output_workbook(result),
+            file_name="Celix_Monthly_Reconciliation.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+with tab_summary:
+    st.header("Data Summary Generator")
+    st.caption("Upload the tracker Excel file to generate a date-wise and source-wise summary.")
+
+    if st.button("Clear summary upload and results", key="summary_clear"):
+        st.session_state.pop("summary_result", None)
+        st.session_state["summary_version"] = st.session_state.get("summary_version", 0) + 1
+        st.rerun()
+
+    summary_version = st.session_state.get("summary_version", 0)
+    summary_file = st.file_uploader("Upload Excel File", type=["xlsx"], key=f"summary_upload_{summary_version}")
+
+    if summary_file and st.button("Generate summary", type="primary", key="generate_summary"):
+        try:
+            df = pd.read_excel(summary_file, engine="openpyxl")
+            if df.empty:
+                raise ValueError("The uploaded Excel file is empty.")
+            df.columns = df.columns.astype(str).str.strip().str.lower()
+            possible_dates = ["download date", "receipt date", "downloaded date", "date of receipt", "receiptdate", "download_date", "receipt_date"]
+            date_col = next((c for c in df.columns if c in possible_dates), None)
+            if not date_col:
+                raise ValueError("No valid Receipt Date or Download Date column was found.")
+            df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+            invalid = int(df[date_col].isna().sum())
+            df = df.dropna(subset=[date_col]).sort_values(date_col)
+            source_col = "source" if "source" in df.columns else None
+            if not source_col:
+                df["source"] = "UNKNOWN"; source_col = "source"
+            df[source_col] = df[source_col].astype(str).str.strip().str.upper().replace(["", "NAN", "NONE"], "UNKNOWN")
+            validity_col = "validity" if "validity" in df.columns else None
+            rows=[]
+            pairs=df[[date_col,source_col]].drop_duplicates().sort_values([date_col,source_col])
+            for _,pair in pairs.iterrows():
+                current=pair[date_col]; source=pair[source_col]
+                subset=df[(df[date_col]==current)&(df[source_col]==source)]
+                no_report=subset.astype(str).apply(lambda c:c.str.contains("No Report Received",case=False,na=False)).any().any()
+                if source=="MHRA":
+                    previous=pairs[(pairs[source_col]=="MHRA")&(pairs[date_col]<current)][date_col]
+                    if previous.empty:
+                        from_date=current-pd.Timedelta(days=3 if current.day_name()=="Monday" else 1)
+                    else: from_date=previous.max()
+                    to_date=current-pd.Timedelta(days=1)
+                elif source in ["ADIS","NA"]:
+                    from_date=current-pd.Timedelta(days=current.weekday()); to_date=current
+                else: from_date=to_date=None
+                if no_report: total=valid=non_valid="No Report Received"
+                else:
+                    total=len(subset)
+                    if validity_col:
+                        v=subset[validity_col].astype(str).str.strip().str.lower()
+                        valid=int((v=="valid").sum()); non_valid=int((v=="non-valid").sum())
+                    else: valid=non_valid=0
+                rows.append({"Receipt Date":current,"Source":source,"From":from_date,"To":to_date,"Total Number":total,"Valid":valid,"Non-Valid":non_valid})
+            summary=pd.DataFrame(rows)
+            for col in ["Receipt Date","From","To"]:
+                summary[col]=pd.to_datetime(summary[col],errors="coerce").dt.strftime("%d-%b-%y")
+            st.session_state["summary_result"]={"data":summary.fillna(""),"invalid":invalid}
+        except Exception as exc: st.error(f"Summary generation failed: {exc}")
+
+    saved=st.session_state.get("summary_result")
+    if saved:
+        if saved["invalid"]: st.warning(f"Ignored {saved['invalid']} invalid or blank date row(s).")
+        summary=saved["data"]
+        st.dataframe(summary,use_container_width=True,hide_index=True)
+        output=io.BytesIO()
+        with pd.ExcelWriter(output,engine="openpyxl") as writer:
+            summary.to_excel(writer,index=False,sheet_name="Summary")
+            ws=writer.book["Summary"]; ws.freeze_panes=None; ws.auto_filter.ref=None
+            for cell in ws[1]:
+                cell.font=Font(bold=True,color="FFFFFF"); cell.fill=PatternFill("solid",fgColor="1F4E78")
+            for col in range(1,ws.max_column+1): ws.column_dimensions[get_column_letter(col)].width=18
+        st.download_button("Download Summary Excel",output.getvalue(),file_name="Summary_Output.xlsx",mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
