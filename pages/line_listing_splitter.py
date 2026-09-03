@@ -10,6 +10,7 @@ from pathlib import Path
 import streamlit as st
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment
 
 st.title("Monthly Line Listing Application")
 
@@ -222,6 +223,42 @@ def normalize_xlsx_font_order(xlsx_bytes):
             zout.writestr(item, data)
     return target.getvalue()
 
+def date_only_value(value):
+    """Return ADR receipt value as a date only, without time."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    for fmt in ("%d-%b-%Y-%H:%M:%S", "%d-%b-%y-%H:%M:%S", "%d-%b-%Y", "%d-%b-%y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+    return text
+
+
+def semicolon_to_newline(value):
+    """Display each semicolon-separated value on a separate line."""
+    if not isinstance(value, str) or ";" not in value:
+        return value
+    parts = [part.strip() for part in value.split(";")]
+    return "\n".join(part for part in parts if part)
+
+
+def apply_output_cell_format(cell):
+    """Wrap text and preserve the cell's existing alignment settings."""
+    existing = cell.alignment
+    cell.alignment = Alignment(
+        horizontal=existing.horizontal,
+        vertical=existing.vertical or "top",
+        text_rotation=existing.text_rotation,
+        wrap_text=True,
+        shrink_to_fit=existing.shrink_to_fit,
+        indent=existing.indent,
+    )
+
+
 def build_split_workbook(uploaded_bytes, selected_year, selected_month):
     workbook = load_workbook(io.BytesIO(uploaded_bytes))
     source = workbook[workbook.sheetnames[0]]
@@ -232,7 +269,10 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
     remove_blank_top_rows(source)
     header_row = find_header_row(source)
     product_col = find_column(source, header_row, "Product Name")
-    date_col = find_column(source, header_row, "ADR Receipt Date")
+    try:
+        date_col = find_column(source, header_row, "ADR Receipt Date/Time")
+    except ValueError:
+        date_col = find_column(source, header_row, "ADR Receipt Date")
 
     first_day = date(selected_year, selected_month, 1)
     last_day = date(selected_year, selected_month, calendar.monthrange(selected_year, selected_month)[1])
@@ -242,22 +282,8 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
         safety_id = source.cell(row, 1).value
         if safety_id in (None, ""):
             continue
-        raw_date = source.cell(row, date_col).value
-        row_date = None
-        if isinstance(raw_date, datetime):
-            row_date = raw_date.date()
-        elif isinstance(raw_date, date):
-            row_date = raw_date
-        else:
-            text = str(raw_date or "").strip()
-            for fmt in ("%d-%b-%Y-%H:%M:%S", "%d-%b-%y-%H:%M:%S", "%d-%b-%Y", "%d-%b-%y"):
-                try:
-                    row_date = datetime.strptime(text, fmt).date()
-                    break
-                except ValueError:
-                    pass
-        if row_date and (row_date.year != selected_year or row_date.month != selected_month):
-            continue
+        # Do not filter rows by ADR Receipt Date. The selected month controls only
+        # the Period text at the top of each generated product sheet.
         for product in matched_celix_products(source.cell(row, product_col).value):
             product_rows.setdefault(product, []).append(row)
 
@@ -274,13 +300,24 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
         for output_index, source_row in enumerate(keep_rows, start=header_row + 1):
             for col in range(1, source.max_column + 1):
                 src_cell = source.cell(source_row, col)
-                dst_cell = ws.cell(output_index, col, src_cell.value)
+                copied_value = src_cell.value
+                if col == date_col:
+                    copied_value = date_only_value(copied_value)
+                elif isinstance(copied_value, str):
+                    copied_value = semicolon_to_newline(copied_value)
+                dst_cell = ws.cell(output_index, col, copied_value)
                 clone_style(src_cell, dst_cell)
+                apply_output_cell_format(dst_cell)
+                if col == date_col and isinstance(copied_value, (date, datetime)):
+                    dst_cell.number_format = "dd-mmm-yyyy"
             ws.row_dimensions[output_index].height = source.row_dimensions[source_row].height
             # Keep all report columns, but show only the current Celix product in Product Name.
             ws.cell(output_index, product_col).value = product_display(product)
         set_top_details(ws, product, first_day, last_day)
         add_serial_number_column(ws, header_row)
+        output_date_col = date_col + 1
+        ws.cell(header_row, output_date_col).value = "ADR Receipt Date"
+        apply_output_cell_format(ws.cell(header_row, output_date_col))
         for index, row in enumerate(range(header_row + 1, ws.max_row + 1), start=1):
             ws.cell(row, 1).value = index
             clone_style(ws.cell(row, 2), ws.cell(row, 1))
@@ -292,7 +329,7 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
 
     workbook.remove(workbook[template_name])
     if not created:
-        raise ValueError("No Celix product rows were found for the selected month.")
+        raise ValueError("No Celix product rows were found in the uploaded report.")
     output = io.BytesIO()
     workbook.save(output)
     result_bytes = normalize_xlsx_font_order(output.getvalue())
