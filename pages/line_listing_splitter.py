@@ -262,19 +262,19 @@ def apply_output_cell_format(cell):
 def auto_fit_product_sheet(ws, header_row):
     """Estimate useful column widths and row heights for wrapped report content."""
     fixed_widths = {
-        "sl no": 8,
-        "safety report id": 24,
+        "sl no": 5,
+        "safety report id": 20,
         "adr receipt date": 16,
         "source country": 18,
-        "case seriousness": 18,
-        "case listedness": 18,
-        "patient details": 24,
-        "product name": 24,
-        "llt": 34,
-        "pt": 34,
-        "soc": 40,
-        "event seriousness": 22,
-        "event listedness": 22,
+        "case seriousness": 15,
+        "case listedness": 15,
+        "patient details": 20,
+        "product name": 20,
+        "llt": 60,
+        "pt": 60,
+        "soc": 60,
+        "event seriousness": 17,
+        "event listedness": 17,
     }
     long_text_headers = {"narrative", "case narrative", "reporter comments", "company comments"}
 
