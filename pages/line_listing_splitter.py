@@ -265,9 +265,9 @@ def fit_product_sheet(ws, header_row):
     fixed_widths = {
         "sl no": 6.5,
         "safety report id": 20,
-        "adr source":14,
+        "adr source":11,
         "adr receipt date": 15.0,
-        "source country": 20,
+        "source country": 17,
         "case seriousness": 16.5,
         "case listedness": 16.0,
         "patient details": 21.0,
