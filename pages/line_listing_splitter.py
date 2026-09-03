@@ -232,7 +232,7 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
     remove_blank_top_rows(source)
     header_row = find_header_row(source)
     product_col = find_column(source, header_row, "Product Name")
-    date_col = find_column(source, header_row, "ADR Receipt Date/Time")
+    date_col = find_column(source, header_row, "ADR Receipt Date")
 
     first_day = date(selected_year, selected_month, 1)
     last_day = date(selected_year, selected_month, calendar.monthrange(selected_year, selected_month)[1])
