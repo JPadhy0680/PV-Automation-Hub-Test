@@ -10,7 +10,7 @@ from pathlib import Path
 import streamlit as st
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, PatternFill, Font
 
 st.title("Monthly Line Listing Application")
 
