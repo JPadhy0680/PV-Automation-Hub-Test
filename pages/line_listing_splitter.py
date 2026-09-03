@@ -260,24 +260,25 @@ def apply_output_cell_format(cell):
 
 
 def fit_product_sheet(ws, header_row):
-    """Keep headers, LLT, PT and SOC on one line; fit remaining content neatly."""
-    no_wrap_headers = {"llt", "pt", "soc"}
+    """Precisely fit columns while preserving one explicit line per LLT/PT/SOC entry."""
+    multiline_headers = {"llt", "pt", "soc"}
     fixed_widths = {
-        "sl no": 8,
-        "safety report id": 24,
-        "adr receipt date": 16,
-        "source country": 18,
-        "case seriousness": 18,
-        "case listedness": 18,
-        "patient details": 24,
-        "product name": 28,
-        "event seriousness": 24,
-        "event listedness": 24,
+        "sl no": 6.5,
+        "safety report id": 22.5,
+        "adr receipt date": 15.0,
+        "source country": 16.5,
+        "case seriousness": 16.5,
+        "case listedness": 16.0,
+        "patient details": 21.0,
+        "product name": 25.0,
+        "event seriousness": 20.0,
+        "event listedness": 20.0,
     }
 
-    # All table headings stay on one line.
+    # Headers must always stay on one line and use a close-fit width.
     for col in range(1, ws.max_column + 1):
         header_cell = ws.cell(header_row, col)
+        header_text = str(header_cell.value or "")
         existing = header_cell.alignment
         header_cell.alignment = Alignment(
             horizontal=existing.horizontal,
@@ -287,53 +288,51 @@ def fit_product_sheet(ws, header_row):
             shrink_to_fit=False,
             indent=existing.indent,
         )
-
-    # Set widths. LLT, PT and SOC use the longest explicit line and do not wrap.
-    for col in range(1, ws.max_column + 1):
-        header = norm(ws.cell(header_row, col).value)
-        letter = get_column_letter(col)
-        header_length = len(str(ws.cell(header_row, col).value or ""))
-        longest_line = header_length
+        header = norm(header_text)
+        longest_explicit_line = len(header_text)
         for row in range(header_row + 1, ws.max_row + 1):
             value = str(ws.cell(row, col).value or "")
-            longest_line = max(longest_line, max((len(line) for line in value.split("\n")), default=0))
+            longest_explicit_line = max(
+                longest_explicit_line,
+                max((len(line) for line in value.split("\n")), default=0),
+            )
 
-        if header in no_wrap_headers:
-            # Wide enough for each LLT/PT/SOC entry to remain on one line.
-            width = min(max(longest_line + 2, header_length + 2, 18), 80)
+        if header in multiline_headers:
+            # Width fits the longest individual term. Explicit new lines remain,
+            # but no term should soft-wrap within its own line.
+            width = min(max(longest_explicit_line + 0.5, len(header_text) + 0.5, 14), 72)
         elif header in fixed_widths:
-            width = max(fixed_widths[header], header_length + 2)
+            width = max(fixed_widths[header], len(header_text) + 0.5)
         else:
-            width = min(max(longest_line + 2, header_length + 2, 10), 40)
-        ws.column_dimensions[letter].width = width
+            width = min(max(longest_explicit_line + 0.5, len(header_text) + 0.5, 9), 38)
+        ws.column_dimensions[get_column_letter(col)].width = width
 
-    # Apply content alignment and calculate row height for wrapped columns only.
+    # LLT/PT/SOC require wrap_text=True only to display explicit newline characters.
+    # Their widths are sized so each individual entry remains on one unwrapped line.
     for row in range(header_row + 1, ws.max_row + 1):
         required_lines = 1
         for col in range(1, ws.max_column + 1):
             cell = ws.cell(row, col)
             header = norm(ws.cell(header_row, col).value)
             existing = cell.alignment
-            should_wrap = header not in no_wrap_headers
+            explicit_lines = str(cell.value or "").split("\n") or [""]
+            if header in multiline_headers:
+                line_count = len(explicit_lines)
+            else:
+                width = max(int(ws.column_dimensions[get_column_letter(col)].width or 10), 1)
+                line_count = sum(max(1, (len(line) + width - 1) // width) for line in explicit_lines)
+            required_lines = max(required_lines, line_count)
             cell.alignment = Alignment(
                 horizontal=existing.horizontal,
                 vertical="top",
                 text_rotation=existing.text_rotation,
-                wrap_text=should_wrap,
+                wrap_text=True,
                 shrink_to_fit=False,
                 indent=existing.indent,
             )
-            value = str(cell.value or "")
-            explicit_lines = value.split("\n") or [""]
-            if should_wrap:
-                width = max(int(ws.column_dimensions[get_column_letter(col)].width or 10) - 1, 1)
-                line_count = sum(max(1, (len(line) + width - 1) // width) for line in explicit_lines)
-            else:
-                line_count = max(1, len(explicit_lines))
-            required_lines = max(required_lines, line_count)
         ws.row_dimensions[row].height = min(max(18, required_lines * 15), 180)
 
-    ws.row_dimensions[header_row].height = 22
+    ws.row_dimensions[header_row].height = 20
 
 
 def build_split_workbook(uploaded_bytes, selected_year, selected_month):
@@ -350,6 +349,8 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
         date_col = find_column(source, header_row, "ADR Receipt Date/Time")
     except ValueError:
         date_col = find_column(source, header_row, "ADR Receipt Date")
+    case_listedness_col = find_column(source, header_row, "Case Listedness")
+    event_listedness_col = find_column(source, header_row, "Event Listedness")
 
     first_day = date(selected_year, selected_month, 1)
     last_day = date(selected_year, selected_month, calendar.monthrange(selected_year, selected_month)[1])
@@ -388,6 +389,20 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
                 if col == date_col and isinstance(copied_value, (date, datetime)):
                     dst_cell.number_format = "dd-mmm-yyyy"
             ws.row_dimensions[output_index].height = source.row_dimensions[source_row].height
+
+            # Ignore the supplied Case Listedness and derive it from Event Listedness.
+            # Any Unexpected event makes the case Unexpected; otherwise it is Expected.
+            event_listedness_value = str(source.cell(source_row, event_listedness_col).value or "")
+            event_statuses = [
+                norm(part) for part in re.split(r"[;\n]+", event_listedness_value) if norm(part)
+            ]
+            derived_case_listedness = (
+                "Unexpected" if any(status == "unexpected" or status.endswith(" unexpected") for status in event_statuses)
+                else "Expected"
+            )
+            ws.cell(output_index, case_listedness_col).value = derived_case_listedness
+            apply_output_cell_format(ws.cell(output_index, case_listedness_col))
+
             # Keep all report columns, but show only the current Celix product in Product Name.
             ws.cell(output_index, product_col).value = product_display(product)
         set_top_details(ws, product, first_day, last_day)
