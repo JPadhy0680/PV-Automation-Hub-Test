@@ -279,6 +279,16 @@ def fit_product_sheet(ws, header_row):
     # Headers must always stay on one line and use a close-fit width.
     for col in range(1, ws.max_column + 1):
         header_cell = ws.cell(header_row, col)
+        header_cell.fill = PatternFill(
+            fill_type="solid",
+            fgColor="D9EAF7"
+        )
+        header_cell.font = Font(
+            name=header_cell.font.name,
+            size=header_cell.font.size,
+            bold=True,
+            color="1F1F1F"
+        )
         header_text = str(header_cell.value or "")
         existing = header_cell.alignment
         header_cell.alignment = Alignment(
