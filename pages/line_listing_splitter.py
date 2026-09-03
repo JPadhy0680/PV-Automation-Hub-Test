@@ -259,6 +259,61 @@ def apply_output_cell_format(cell):
     )
 
 
+def auto_fit_product_sheet(ws, header_row):
+    """Estimate useful column widths and row heights for wrapped report content."""
+    fixed_widths = {
+        "sl no": 8,
+        "safety report id": 24,
+        "adr receipt date": 16,
+        "source country": 18,
+        "case seriousness": 18,
+        "case listedness": 18,
+        "patient details": 24,
+        "product name": 24,
+        "llt": 34,
+        "pt": 34,
+        "soc": 40,
+        "event seriousness": 22,
+        "event listedness": 22,
+    }
+    long_text_headers = {"narrative", "case narrative", "reporter comments", "company comments"}
+
+    # Determine widths from headers and visible content, with practical caps.
+    for col in range(1, ws.max_column + 1):
+        header = norm(ws.cell(header_row, col).value)
+        letter = get_column_letter(col)
+        if header in fixed_widths:
+            width = fixed_widths[header]
+        else:
+            max_line_length = len(str(ws.cell(header_row, col).value or ""))
+            for row in range(header_row + 1, min(ws.max_row, header_row + 250) + 1):
+                value = ws.cell(row, col).value
+                lines = str(value or "").split("\n")
+                max_line_length = max(max_line_length, max((len(line) for line in lines), default=0))
+            cap = 50 if header in long_text_headers else 35
+            width = min(max(max_line_length + 2, 10), cap)
+        ws.column_dimensions[letter].width = width
+
+    # Fit each data row to explicit line breaks and estimated wrapped lines.
+    for row in range(header_row + 1, ws.max_row + 1):
+        required_lines = 1
+        for col in range(1, ws.max_column + 1):
+            cell = ws.cell(row, col)
+            apply_output_cell_format(cell)
+            value = str(cell.value or "")
+            width = ws.column_dimensions[get_column_letter(col)].width or 10
+            explicit_lines = value.split("\n") or [""]
+            estimated_lines = sum(max(1, (len(line) + max(int(width) - 1, 1) - 1) // max(int(width) - 1, 1)) for line in explicit_lines)
+            required_lines = max(required_lines, estimated_lines)
+        ws.row_dimensions[row].height = min(max(18, required_lines * 15), 150)
+
+    # Keep report header rows compact and table header readable.
+    ws.row_dimensions[header_row].height = max(ws.row_dimensions[header_row].height or 18, 30)
+    for row in range(1, header_row):
+        if ws.row_dimensions[row].height is None:
+            ws.row_dimensions[row].height = 18
+
+
 def build_split_workbook(uploaded_bytes, selected_year, selected_month):
     workbook = load_workbook(io.BytesIO(uploaded_bytes))
     source = workbook[workbook.sheetnames[0]]
@@ -322,6 +377,7 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
             ws.cell(row, 1).value = index
             clone_style(ws.cell(row, 2), ws.cell(row, 1))
             ws.cell(row, 1).alignment = copy(ws.cell(row, 2).alignment)
+        auto_fit_product_sheet(ws, header_row)
         ws.freeze_panes = None
         ws.auto_filter.ref = None
         ws.sheet_view.showGridLines = source.sheet_view.showGridLines
