@@ -259,59 +259,81 @@ def apply_output_cell_format(cell):
     )
 
 
-def auto_fit_product_sheet(ws, header_row):
-    """Estimate useful column widths and row heights for wrapped report content."""
+def fit_product_sheet(ws, header_row):
+    """Keep headers, LLT, PT and SOC on one line; fit remaining content neatly."""
+    no_wrap_headers = {"llt", "pt", "soc"}
     fixed_widths = {
-        "sl no": 5,
-        "safety report id": 20,
+        "sl no": 8,
+        "safety report id": 24,
         "adr receipt date": 16,
         "source country": 18,
-        "case seriousness": 15,
-        "case listedness": 15,
-        "patient details": 20,
-        "product name": 20,
-        "llt": 60,
-        "pt": 60,
-        "soc": 60,
-        "event seriousness": 17,
-        "event listedness": 17,
+        "case seriousness": 18,
+        "case listedness": 18,
+        "patient details": 24,
+        "product name": 28,
+        "event seriousness": 24,
+        "event listedness": 24,
     }
-    long_text_headers = {"narrative", "case narrative", "reporter comments", "company comments"}
 
-    # Determine widths from headers and visible content, with practical caps.
+    # All table headings stay on one line.
+    for col in range(1, ws.max_column + 1):
+        header_cell = ws.cell(header_row, col)
+        existing = header_cell.alignment
+        header_cell.alignment = Alignment(
+            horizontal=existing.horizontal,
+            vertical=existing.vertical or "center",
+            text_rotation=existing.text_rotation,
+            wrap_text=False,
+            shrink_to_fit=False,
+            indent=existing.indent,
+        )
+
+    # Set widths. LLT, PT and SOC use the longest explicit line and do not wrap.
     for col in range(1, ws.max_column + 1):
         header = norm(ws.cell(header_row, col).value)
         letter = get_column_letter(col)
-        if header in fixed_widths:
-            width = fixed_widths[header]
+        header_length = len(str(ws.cell(header_row, col).value or ""))
+        longest_line = header_length
+        for row in range(header_row + 1, ws.max_row + 1):
+            value = str(ws.cell(row, col).value or "")
+            longest_line = max(longest_line, max((len(line) for line in value.split("\n")), default=0))
+
+        if header in no_wrap_headers:
+            # Wide enough for each LLT/PT/SOC entry to remain on one line.
+            width = min(max(longest_line + 2, header_length + 2, 18), 80)
+        elif header in fixed_widths:
+            width = max(fixed_widths[header], header_length + 2)
         else:
-            max_line_length = len(str(ws.cell(header_row, col).value or ""))
-            for row in range(header_row + 1, min(ws.max_row, header_row + 250) + 1):
-                value = ws.cell(row, col).value
-                lines = str(value or "").split("\n")
-                max_line_length = max(max_line_length, max((len(line) for line in lines), default=0))
-            cap = 50 if header in long_text_headers else 35
-            width = min(max(max_line_length + 2, 10), cap)
+            width = min(max(longest_line + 2, header_length + 2, 10), 40)
         ws.column_dimensions[letter].width = width
 
-    # Fit each data row to explicit line breaks and estimated wrapped lines.
+    # Apply content alignment and calculate row height for wrapped columns only.
     for row in range(header_row + 1, ws.max_row + 1):
         required_lines = 1
         for col in range(1, ws.max_column + 1):
             cell = ws.cell(row, col)
-            apply_output_cell_format(cell)
+            header = norm(ws.cell(header_row, col).value)
+            existing = cell.alignment
+            should_wrap = header not in no_wrap_headers
+            cell.alignment = Alignment(
+                horizontal=existing.horizontal,
+                vertical="top",
+                text_rotation=existing.text_rotation,
+                wrap_text=should_wrap,
+                shrink_to_fit=False,
+                indent=existing.indent,
+            )
             value = str(cell.value or "")
-            width = ws.column_dimensions[get_column_letter(col)].width or 10
             explicit_lines = value.split("\n") or [""]
-            estimated_lines = sum(max(1, (len(line) + max(int(width) - 1, 1) - 1) // max(int(width) - 1, 1)) for line in explicit_lines)
-            required_lines = max(required_lines, estimated_lines)
-        ws.row_dimensions[row].height = min(max(18, required_lines * 15), 150)
+            if should_wrap:
+                width = max(int(ws.column_dimensions[get_column_letter(col)].width or 10) - 1, 1)
+                line_count = sum(max(1, (len(line) + width - 1) // width) for line in explicit_lines)
+            else:
+                line_count = max(1, len(explicit_lines))
+            required_lines = max(required_lines, line_count)
+        ws.row_dimensions[row].height = min(max(18, required_lines * 15), 180)
 
-    # Keep report header rows compact and table header readable.
-    ws.row_dimensions[header_row].height = max(ws.row_dimensions[header_row].height or 18, 30)
-    for row in range(1, header_row):
-        if ws.row_dimensions[row].height is None:
-            ws.row_dimensions[row].height = 18
+    ws.row_dimensions[header_row].height = 22
 
 
 def build_split_workbook(uploaded_bytes, selected_year, selected_month):
@@ -377,7 +399,7 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
             ws.cell(row, 1).value = index
             clone_style(ws.cell(row, 2), ws.cell(row, 1))
             ws.cell(row, 1).alignment = copy(ws.cell(row, 2).alignment)
-        auto_fit_product_sheet(ws, header_row)
+        fit_product_sheet(ws, header_row)
         ws.freeze_panes = None
         ws.auto_filter.ref = None
         ws.sheet_view.showGridLines = source.sheet_view.showGridLines
