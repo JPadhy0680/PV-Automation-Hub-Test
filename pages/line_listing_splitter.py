@@ -264,15 +264,15 @@ def fit_product_sheet(ws, header_row):
     multiline_headers = {"llt", "pt", "soc"}
     fixed_widths = {
         "sl no": 6.5,
-        "safety report id": 22.5,
+        "safety report id": 20,
         "adr receipt date": 15.0,
         "source country": 16.5,
         "case seriousness": 16.5,
         "case listedness": 16.0,
         "patient details": 21.0,
-        "product name": 25.0,
-        "event seriousness": 20.0,
-        "event listedness": 20.0,
+        "product name": 20.0,
+        "event seriousness": 16.0,
+        "event listedness": 15.0,
     }
 
     # Headers must always stay on one line and use a close-fit width.
