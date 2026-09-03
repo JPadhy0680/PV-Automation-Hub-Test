@@ -406,6 +406,19 @@ def build_split_workbook(uploaded_bytes, selected_year, selected_month):
             # Keep all report columns, but show only the current Celix product in Product Name.
             ws.cell(output_index, product_col).value = product_display(product)
         set_top_details(ws, product, first_day, last_day)
+
+        # Keep the report title left-aligned even though the title row is merged.
+        title_cell = ws.cell(1, 1)
+        title_alignment = title_cell.alignment
+        title_cell.alignment = Alignment(
+            horizontal="left",
+            vertical=title_alignment.vertical or "center",
+            text_rotation=title_alignment.text_rotation,
+            wrap_text=False,
+            shrink_to_fit=False,
+            indent=0,
+        )
+
         add_serial_number_column(ws, header_row)
         output_date_col = date_col + 1
         ws.cell(header_row, output_date_col).value = "ADR Receipt Date"
