@@ -1,7 +1,7 @@
 # app.py
 import streamlit as st
 from shared_context import init_shared_context
-from listedness_service import dataframe_to_index, assess, has_exact_match, render_missing_listedness_update
+from listedness_service import dataframe_to_index, assess, has_exact_match, github_upsert_row, password_ok
 init_shared_context()
 import pandas as pd
 import xml.etree.ElementTree as ET
@@ -1329,12 +1329,22 @@ with tab1:
                     lines = []
                     products_to_check = list(case_products_norm) if case_products_norm else []
                     for i, llt_norm in enumerate(event_llts_norm, start=1):
-                        results = [assess(listedness_pairs, pnorm, llt_norm)[0] for pnorm in products_to_check]
-                        status = results[0] if len(results) == 1 else ("Expected" if "Expected" in results else (results[0] if results else "No exact match found"))
+                        exact_results = [
+                            assess(listedness_pairs, pnorm, llt_norm)[0]
+                            for pnorm in products_to_check
+                            if has_exact_match(listedness_pairs, pnorm, llt_norm)
+                        ]
+                        status = exact_results[0] if len(exact_results) == 1 else (
+                            "Expected" if "Expected" in exact_results else
+                            (exact_results[0] if exact_results else "No value found")
+                        )
                         lines.append(f"Event {i}: {status}")
                         for pnorm in products_to_check:
                             if not has_exact_match(listedness_pairs, pnorm, llt_norm):
-                                pair = (product_norm_to_pretty.get(pnorm, pnorm), event_pts[i - 1] if i - 1 < len(event_pts) else llt_norm)
+                                pair = (
+                                    pnorm.upper(),
+                                    event_pts[i - 1] if i - 1 < len(event_pts) else llt_norm,
+                                )
                                 if pair not in unmatched_listedness_pairs:
                                     unmatched_listedness_pairs.append(pair)
                     event_wise_listedness_display = "\n".join(lines)
@@ -1344,10 +1354,16 @@ with tab1:
                         pretty = product_norm_to_pretty.get(pnorm, pnorm)
                         statuses = []
                         for i, llt_norm in enumerate(event_llts_norm, start=1):
-                            status, _ = assess(listedness_pairs, pnorm, llt_norm)
+                            if has_exact_match(listedness_pairs, pnorm, llt_norm):
+                                status, _ = assess(listedness_pairs, pnorm, llt_norm)
+                            else:
+                                status = "No value found"
                             statuses.append(f"Event {i}: {status}")
                             if not has_exact_match(listedness_pairs, pnorm, llt_norm):
-                                pair = (pretty, event_pts[i - 1] if i - 1 < len(event_pts) else llt_norm)
+                                pair = (
+                                    pnorm.upper(),
+                                    event_pts[i - 1] if i - 1 < len(event_pts) else llt_norm,
+                                )
                                 if pair not in unmatched_listedness_pairs:
                                     unmatched_listedness_pairs.append(pair)
                         prod_lines.append(f"{pretty} - " + "; ".join(statuses))
@@ -1663,10 +1679,102 @@ with tab4:
 
 
 
-# Inline update options only for exact pairs missing from the listedness master
+# One consolidated update box for all listedness pairs with no stored value.
 if unmatched_listedness_pairs:
-    st.markdown("### Listedness updates required")
-    st.caption("Only combinations with no exact Active Ingredient + PT match are shown below.")
-    for _idx, (_ingredient, _pt) in enumerate(unmatched_listedness_pairs, start=1):
-        with st.expander(f"{_ingredient} | {_pt}", expanded=False):
-            render_missing_listedness_update(f"triage_missing_{_idx}", _ingredient, _pt)
+    st.markdown("### Listedness values not available")
+    st.warning(
+        f"{len(unmatched_listedness_pairs)} unique Active Ingredient + PT pair(s) have no value in the listedness master."
+    )
+    st.caption(
+        "Review all pairs below. Expectedness is intentionally blank and is never assumed to be Unexpected. "
+        "Select Expected or Unexpected only for the pairs you want to add, then authorize the complete batch once."
+    )
+
+    missing_rows = [
+        {
+            "Update": True,
+            "Active Ingredients": ingredient,
+            "PT": pt,
+            "Expectedness": "",
+            "Comment": "",
+        }
+        for ingredient, pt in unmatched_listedness_pairs
+    ]
+    missing_df = pd.DataFrame(missing_rows)
+
+    edited_missing_df = st.data_editor(
+        missing_df,
+        hide_index=True,
+        use_container_width=True,
+        key="triage_missing_listedness_batch_editor",
+        column_config={
+            "Update": st.column_config.CheckboxColumn("Update", default=True),
+            "Active Ingredients": st.column_config.TextColumn("Active Ingredients", disabled=True),
+            "PT": st.column_config.TextColumn("PT", disabled=True, width="large"),
+            "Expectedness": st.column_config.SelectboxColumn(
+                "Expectedness",
+                options=["Expected", "Unexpected"],
+                required=False,
+            ),
+            "Comment": st.column_config.TextColumn("Comment", width="large"),
+        },
+        disabled=["Active Ingredients", "PT"],
+    )
+
+    batch_password = st.text_input(
+        "Administrator password for all selected listedness pairs",
+        type="password",
+        key="triage_missing_listedness_batch_password",
+    )
+
+    if st.button(
+        "Update all completed listedness pairs",
+        key="triage_submit_missing_listedness_batch",
+        type="primary",
+    ):
+        rows_to_update = []
+        incomplete_selected = 0
+        for row in edited_missing_df.to_dict("records"):
+            if not row.get("Update"):
+                continue
+            expectedness = str(row.get("Expectedness", "") or "").strip()
+            if expectedness not in {"Expected", "Unexpected"}:
+                incomplete_selected += 1
+                continue
+            rows_to_update.append(row)
+
+        if not password_ok(batch_password):
+            st.error("Invalid administrator password.")
+        elif not rows_to_update:
+            st.error("Select Expectedness for at least one checked pair before updating.")
+        else:
+            successes = []
+            failures = []
+            progress = st.progress(0)
+            for row_number, row in enumerate(rows_to_update, start=1):
+                try:
+                    commit_sha = github_upsert_row(
+                        str(row.get("Active Ingredients", "")).strip(),
+                        str(row.get("PT", "")).strip(),
+                        str(row.get("Expectedness", "")).strip(),
+                        str(row.get("Comment", "") or "").strip(),
+                    )
+                    successes.append(commit_sha)
+                except Exception as exc:
+                    failures.append(
+                        f"{row.get('Active Ingredients', '')} + {row.get('PT', '')}: {exc}"
+                    )
+                progress.progress(row_number / len(rows_to_update))
+
+            if successes:
+                st.success(f"Updated {len(successes)} listedness pair(s).")
+                st.cache_data.clear()
+            if incomplete_selected:
+                st.info(
+                    f"Skipped {incomplete_selected} checked pair(s) because Expectedness was left blank."
+                )
+            if failures:
+                st.error("Some pairs could not be updated:\n" + "\n".join(failures))
+            elif successes:
+                st.info("Refresh or reboot the app, then upload the XML files again to use the newly stored values.")
+
