@@ -315,6 +315,56 @@ tab_reconciliation, tab_summary = st.tabs(["Case Reconciliation", "Data Summary 
 with tab_reconciliation:
     st.header("Monthly Case Reconciliation")
     st.caption("Upload the tracker and safety-system reports to identify missing cases and field-level mismatches.")
+
+    with st.expander("Input instructions: Case Reconciliation", expanded=False):
+        st.markdown(
+            """
+            **Upload two Excel files in `.xlsx` format. The application reads the first worksheet of each file.**
+
+            #### 1. Tracker Report
+            The tracker header row must contain:
+
+            - **Receipt Date**: Date the case was received by PV.
+            - **Referance ID** or **Reference ID**: Source or partner reference number.
+            - **Safety Repoprt ID** or **Safety Report ID**: Complete Celix safety-report ID, including the version suffix such as `-01` or `-02`.
+            - **Seriousness**: `Serious` or `Non-serious`.
+
+            The following tracker columns are optional but will be included in the output when available:
+
+            - **ACK No**
+            - **Source**
+            - **IRD**
+            - **Suspect Product**
+            - **Validity**
+
+            #### 2. Safety-System Report
+            The safety-system header row must contain:
+
+            - **Safety Report ID**: Complete case ID, including the version suffix.
+            - **ADR Receipt Date/Time**: Compared with tracker **IRD**.
+            - **PV Received Date/Time** or **Pv Received Date/Time**: Compared with tracker **Receipt Date**.
+            - **Case Seriousness**: Compared with tracker **Seriousness**.
+            - **External ID**: May contain multiple IDs separated by semicolons, commas, vertical bars, or line breaks.
+
+            #### Matching rules
+
+            - Safety Report IDs are matched **exactly**, including the final version. For example, `GB-CELIXP-002023-01` and `GB-CELIXP-002023-02` are treated as different records.
+            - Reference ID versus External ID fallback is used only when the tracker Safety Report ID is blank.
+            - Tracker **Receipt Date** is compared with safety-system **PV Received Date/Time** using the date portion only.
+            - Tracker **IRD** is compared with safety-system **ADR Receipt Date/Time** using the date portion only.
+            - Seriousness text is normalized before comparison.
+
+            #### Accepted date examples
+
+            - `03-Aug-2026-13:55:19`
+            - `03-Aug-2026`
+            - `03-Aug-26`
+            - `03/08/2026`
+            - `2026-08-03`
+
+            **Do not upload the same report in both upload boxes.** Use **Clear uploads and results** before starting a fresh reconciliation.
+            """
+        )
     if st.button("Clear uploads and results", key="recon_clear"):
         for key in ["recon_results", "tracker_upload", "safety_upload"]:
             st.session_state.pop(key, None)
@@ -368,6 +418,51 @@ with tab_reconciliation:
 with tab_summary:
     st.header("Data Summary Generator")
     st.caption("Upload the tracker Excel file to generate a date-wise and source-wise summary.")
+
+    with st.expander("Input instructions: Data Summary Generator", expanded=False):
+        st.markdown(
+            """
+            **Upload one tracker Excel file in `.xlsx` format. The first row should contain the column headings.**
+
+            #### Required date column
+            The file must contain one of these headings:
+
+            - **Receipt Date**
+            - **Download Date**
+            - **Downloaded Date**
+            - **Date of Receipt**
+            - `receiptdate`
+            - `receipt_date`
+            - `download_date`
+
+            #### Recommended columns
+
+            - **Source**: Examples include `MHRA`, `ADIS`, or `NA`. If absent, the app uses `UNKNOWN`.
+            - **Validity**: Use `Valid` or `Non-Valid` for accurate counts.
+
+            #### Special value
+
+            If any cell in a date-and-source group contains **No Report Received**, the Total Number, Valid, and Non-Valid results for that group will display `No Report Received`.
+
+            #### Period logic
+
+            - **MHRA**: From the previous MHRA receipt date to one day before the current receipt date. For the first Monday entry, the default period begins three days earlier.
+            - **ADIS / NA**: From Monday of the corresponding week through the receipt date.
+            - **Other sources**: From and To remain blank.
+
+            #### Output columns
+
+            - Receipt Date
+            - Source
+            - From
+            - To
+            - Total Number
+            - Valid
+            - Non-Valid
+
+            Use **Clear summary upload and results** before uploading a different file.
+            """
+        )
 
     if st.button("Clear summary upload and results", key="summary_clear"):
         st.session_state.pop("summary_result", None)
