@@ -563,6 +563,60 @@ tab_split, tab_check = st.tabs(["Product-wise Line Listing", "Event Listedness C
 with tab_split:
     st.subheader("Product-Wise Monthly Line Listing Splitter")
     st.caption("Upload one monthly line listing and download one workbook with a separate sheet for each Celix product.")
+
+    with st.expander("Input instructions: Product-wise Line Listing", expanded=False):
+        st.markdown(
+            """
+            ### Purpose
+            This tab converts one combined monthly line-listing report into one Excel workbook containing a separate worksheet for every detected **Celix product**.
+
+            ### Required input
+            Upload one Excel workbook in `.xlsx` format. The application reads the **first worksheet** and identifies the table by locating these headings:
+
+            - **Safety Report ID**
+            - **Product Name**
+            - **ADR Receipt Date/Time** or **ADR Receipt Date**
+            - **Case Listedness**
+            - **Event Listedness**
+
+            The report may also contain the standard columns **ADR Source**, **Source Country**, **Case Seriousness**, **Patient Details**, **LLT**, **PT**, **SOC**, and **Event Seriousness**.
+
+            ### Month and year selection
+            - Select the reporting month and year that should appear in the **Period** line at the top of every output sheet.
+            - The selected month does **not** filter the uploaded rows.
+            - Cases present in the report are retained even when their ADR Receipt Date falls in the last days of the previous month.
+
+            ### Celix-product segregation
+            - Only products included in the application's configured Celix product list are considered.
+            - Non-Celix products are ignored.
+            - If one case contains more than one Celix product, the same case is copied to every applicable product worksheet.
+            - In each product worksheet, **Product Name** is changed to the corresponding Celix product only.
+
+            ### Output transformation
+            - One worksheet is created for each detected Celix product.
+            - A **Sl No** column is added to each product worksheet.
+            - **ADR Receipt Date/Time** is renamed to **ADR Receipt Date**.
+            - The time portion is removed. Example: `03-Aug-2026-13:55:19` becomes `03-Aug-2026`.
+            - Semicolon-separated values are placed on separate lines within the same cell.
+            - LLT, PT, and SOC entries remain on separate lines, with each individual entry kept on one line where possible.
+            - Headers remain on one line and are highlighted with a gentle color.
+            - Column widths and row heights are adjusted to fit the displayed content.
+            - No filters or frozen rows/columns are added.
+
+            ### Case Listedness calculation
+            The supplied **Case Listedness** value is ignored and recalculated from **Event Listedness**:
+
+            - If **any event is Unexpected**, Case Listedness becomes **Unexpected**.
+            - If all events are Expected, Case Listedness becomes **Expected**.
+
+            ### How to use
+            1. Upload the monthly line-listing `.xlsx` file.
+            2. Select the reporting month and year.
+            3. Click **Generate product-wise workbook**.
+            4. Review the displayed product-wise case counts.
+            5. Click **Download segregated workbook**.
+            """
+        )
     uploaded = st.file_uploader("Upload monthly line listing", type=["xlsx"], key="line_listing_upload")
     current = date.today()
     c1, c2 = st.columns(2)
@@ -587,6 +641,72 @@ with tab_check:
 
     st.subheader("Event Summary Listedness Check")
     st.caption("Checks only Celix products and compares report expectedness against Active Ingredient + PT in Listedness_CX.xlsx.")
+
+    with st.expander("Input instructions: Event Listedness Check", expanded=False):
+        st.markdown(
+            """
+            ### Purpose
+            This tab reviews listedness for Celix product-event pairs by comparing an uploaded Event Summary Report with the stored **Listedness_CX.xlsx** master.
+
+            ### Required input
+            Upload one Event Summary Report in `.xlsx` format. The application reads the **first worksheet** and requires these headings:
+
+            - **Safety Report ID**
+            - **Product Name**
+            - **PT**
+            - **Other Listedness**
+
+            Example **Other Listedness** values may contain text such as `UNITED KINGDOM-SmPC-Expected` or `UNITED KINGDOM-SmPC-Unexpected`. The application extracts Expected or Unexpected from that text.
+
+            ### Matching logic
+            - Only products included in the configured Celix product list are assessed.
+            - Non-Celix products are ignored.
+            - PT numeric codes shown in brackets are removed before matching. Example: `Acidosis (10000486)` is checked as `Acidosis`.
+            - The listedness key is **Active Ingredient + PT**.
+            - If a case contains multiple Celix products, each Celix product is assessed separately against the PT.
+            - Repeated occurrences of the same Active Ingredient + PT pair are consolidated in the update table, while the corresponding Safety Report IDs are retained for verification.
+
+            ### Result meanings
+            - **Match**: Report Expectedness and master Expectedness are the same.
+            - **Mismatch**: The pair exists in the master, but the report and master Expectedness values differ.
+            - **No exact match in master**: The Active Ingredient + PT pair is absent from the master.
+            - **Source expectedness unavailable**: Expected or Unexpected could not be identified from Other Listedness.
+            - A missing value is not automatically treated as Unexpected.
+
+            ### Missing and mismatch update table
+            - Missing and mismatch pairs appear together in one editable table.
+            - **Safety Report ID** helps verify that the product and PT were captured from the correct case.
+            - Use **Delete** and then **Delete selected rows** to remove an incorrectly captured pair from the displayed batch only. This does not delete a row from the GitHub master.
+            - Keep **Update** checked only for pairs that should be written to the master.
+            - **New Expectedness is blank by default**. The user must manually select **Expected** or **Unexpected** from the dropdown.
+            - Comment is optional.
+            - Enter the administrator password once and click **Update all selected listedness pairs** to authorize the complete selected batch.
+            - Rows with blank New Expectedness are skipped.
+
+            ### GitHub update requirement
+            Updating the master requires valid Streamlit secrets for:
+
+            - `GITHUB_OWNER`
+            - `GITHUB_REPO`
+            - `GITHUB_BRANCH`
+            - `GITHUB_LISTEDNESS_PATH`
+            - `GITHUB_TOKEN`
+
+            The GitHub token must have **Contents: Read and write** permission for the configured repository. A `401 Unauthorized` message means the GitHub token is invalid, expired, revoked, incorrectly copied, or does not have access to the selected repository.
+
+            ### How to use
+            1. Upload the Event Summary Report.
+            2. Click **Check listedness mismatches**.
+            3. Review the Match, Mismatch, and Missing counts.
+            4. Download the mismatch report if required.
+            5. Review Safety Report IDs and the captured product-PT pairs.
+            6. Delete unwanted displayed rows if necessary.
+            7. Manually select New Expectedness for the pairs to be updated.
+            8. Enter the administrator password once.
+            9. Click **Update all selected listedness pairs**.
+            10. Use **Clear uploaded file and displayed results** before starting a fresh review.
+            """
+        )
 
     if st.button("Clear uploaded file and displayed results", key="clear_event_listedness"):
         for key in [
